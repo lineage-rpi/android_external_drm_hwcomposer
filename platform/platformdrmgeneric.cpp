@@ -24,7 +24,7 @@
 #include <xf86drmMode.h>
 
 #include <cutils/properties.h>
-#include <gralloc_handle.h>
+#include "gralloc_drm_handle.h"
 #include <hardware/gralloc.h>
 #include <log/log.h>
 
@@ -111,7 +111,7 @@ uint32_t DrmGenericImporter::DrmFormatToBitsPerPixel(uint32_t drm_format) {
 }
 
 int DrmGenericImporter::ImportBuffer(buffer_handle_t handle, hwc_drm_bo_t *bo) {
-  gralloc_handle_t *gr_handle = gralloc_handle(handle);
+  gralloc_drm_handle_t *gr_handle = gralloc_drm_handle(handle);
   if (!gr_handle)
     return -EINVAL;
 
@@ -177,7 +177,7 @@ bool DrmGenericImporter::CanImportBuffer(buffer_handle_t handle) {
     return false;
 
   if (exclude_non_hwfb_) {
-    gralloc_handle_t *hnd = gralloc_handle(handle);
+    gralloc_drm_handle_t *hnd = gralloc_drm_handle(handle);
     return hnd->usage & GRALLOC_USAGE_HW_FB;
   }
 
