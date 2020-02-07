@@ -59,6 +59,7 @@ cc_defaults {
     cppflags: [
         "-DHWC2_USE_CPP11",
         "-DHWC2_INCLUDE_STRINGIFICATION",
+        "-Wno-sign-compare",
     ],
 
     product_variables: {
