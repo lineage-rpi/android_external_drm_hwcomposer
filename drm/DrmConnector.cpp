@@ -130,7 +130,7 @@ bool DrmConnector::external() const {
   return type_ == DRM_MODE_CONNECTOR_HDMIA ||
          type_ == DRM_MODE_CONNECTOR_DisplayPort ||
          type_ == DRM_MODE_CONNECTOR_DVID || type_ == DRM_MODE_CONNECTOR_DVII ||
-         type_ == DRM_MODE_CONNECTOR_VGA;
+         type_ == DRM_MODE_CONNECTOR_VGA || type_ == DRM_MODE_CONNECTOR_Composite;
 }
 
 bool DrmConnector::writeback() const {
