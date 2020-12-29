@@ -221,11 +221,6 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
     }
 
     ALOGI("Connector id: %d, type: %d", c->connector_id, c->connector_type);
-    if (c->connector_type == DRM_MODE_CONNECTOR_Composite) {
-      ALOGE("Skipping DRM_MODE_CONNECTOR_Composite");
-      drmModeFreeConnector(c);
-      continue;
-    }
     if (c->connector_type == DRM_MODE_CONNECTOR_WRITEBACK) {
       ALOGE("Skipping DRM_MODE_CONNECTOR_WRITEBACK");
       drmModeFreeConnector(c);
