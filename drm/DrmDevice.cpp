@@ -145,6 +145,12 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
   }
 #endif
 
+  drmSetMaster(fd());
+  if (!drmIsMaster(fd())) {
+    ALOGE("DRM/KMS master access required");
+    return std::make_tuple(-EACCES, 0);
+  }
+
   drmModeResPtr res = drmModeGetResources(fd());
   if (!res) {
     ALOGE("Failed to get DrmDevice resources");
