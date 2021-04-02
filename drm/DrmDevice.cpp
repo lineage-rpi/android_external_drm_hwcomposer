@@ -227,13 +227,6 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
       break;
     }
 
-    ALOGI("Connector id: %d, type: %d", c->connector_id, c->connector_type);
-    if (c->connector_type == DRM_MODE_CONNECTOR_WRITEBACK) {
-      ALOGE("Skipping DRM_MODE_CONNECTOR_WRITEBACK");
-      drmModeFreeConnector(c);
-      continue;
-    }
-
     std::vector<DrmEncoder *> possible_encoders;
     DrmEncoder *current_encoder = nullptr;
     for (int j = 0; j < c->count_encoders; ++j) {
@@ -341,9 +334,9 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
   }
 
   for (auto &conn : connectors_) {
-    ALOGI("Connector name: %s, connected: %d, id: %d, display: %d, internal: %d, external: %d, writeback: %d",
+    ALOGI("Connector name: %s, connected: %d, id: %d, display: %d, internal: %d, external: %d",
             conn->name().c_str(), conn->state() == DRM_MODE_CONNECTED ? 1 : 0, conn->id(),
-            conn->display(), conn->internal(), conn->external(), conn->writeback());
+            conn->display(), conn->internal(), conn->external());
     ret = CreateDisplayPipe(conn.get());
     if (ret) {
       ALOGE("Failed CreateDisplayPipe %d with %d", conn->id(), ret);
@@ -491,9 +484,6 @@ int DrmDevice::AttachWriteback(DrmConnector *display_conn) {
     return -EINVAL;
   }
   for (auto &writeback_conn : writeback_connectors_) {
-    ALOGI("Connector name: %s, connected: %d, id: %d, display: %d, internal: %d, external: %d, writeback: %d",
-            writeback_conn->name().c_str(), writeback_conn->state() == DRM_MODE_CONNECTED ? 1 : 0, writeback_conn->id(),
-            writeback_conn->display(), writeback_conn->internal(), writeback_conn->external(), writeback_conn->writeback());
     if (writeback_conn->display() >= 0)
       continue;
     for (DrmEncoder *writeback_enc : writeback_conn->possible_encoders()) {
