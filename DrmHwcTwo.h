@@ -137,7 +137,7 @@ class DrmHwcTwo : public hwc2_device_t {
     HWC2::Error SetLayerSurfaceDamage(hwc_region_t damage);
     HWC2::Error SetLayerTransform(int32_t transform);
     HWC2::Error SetLayerVisibleRegion(hwc_region_t visible);
-    HWC2::Error SetLayerZOrder(uint32_t z);
+    HWC2::Error SetLayerZOrder(uint32_t order);
 
    private:
     // sf_type_ stores the initial type given to us by surfaceflinger,
@@ -227,8 +227,9 @@ class DrmHwcTwo : public hwc2_device_t {
         hwc_vsync_period_change_constraints_t *vsyncPeriodChangeConstraints,
         hwc_vsync_period_change_timeline_t *outTimeline);
     HWC2::Error SetAutoLowLatencyMode(bool on);
-    HWC2::Error GetSupportedContentTypes(uint32_t *outNumSupportedContentTypes,
-                                         uint32_t *outSupportedContentTypes);
+    HWC2::Error GetSupportedContentTypes(
+        uint32_t *outNumSupportedContentTypes,
+        const uint32_t *outSupportedContentTypes);
 
     HWC2::Error SetContentType(int32_t contentType);
 #endif
@@ -349,8 +350,8 @@ class DrmHwcTwo : public hwc2_device_t {
     std::map<hwc2_layer_t, HwcLayer> layers_;
     HwcLayer client_layer_;
     UniqueFd present_fence_;
-    int32_t color_mode_;
-    std::array<float, MATRIX_SIZE> color_transform_matrix_;
+    int32_t color_mode_{};
+    std::array<float, MATRIX_SIZE> color_transform_matrix_{};
     android_color_transform_t color_transform_hint_;
 
     uint32_t frame_no_ = 0;

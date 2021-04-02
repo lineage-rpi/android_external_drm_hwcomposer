@@ -68,10 +68,9 @@ uint64_t BufferInfoMaliHisi::ConvertGrallocFormatToDrmModifiers(
 
 int BufferInfoMaliHisi::ConvertBoInfo(buffer_handle_t handle,
                                       hwc_drm_bo_t *bo) {
-  bool is_rgb;
+  bool is_rgb = false;
 
-  private_handle_t const *hnd = reinterpret_cast<private_handle_t const *>(
-      handle);
+  auto *hnd = (private_handle_t const *)handle;
   if (!hnd)
     return -EINVAL;
 

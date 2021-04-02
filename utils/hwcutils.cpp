@@ -30,18 +30,18 @@
 namespace android {
 
 const hwc_drm_bo *DrmHwcBuffer::operator->() const {
-  if (importer_ == NULL) {
+  if (importer_ == nullptr) {
     ALOGE("Access of non-existent BO");
     exit(1);
-    return NULL;
+    return nullptr;
   }
   return &bo_;
 }
 
 void DrmHwcBuffer::Clear() {
-  if (importer_ != NULL) {
+  if (importer_ != nullptr) {
     importer_->ReleaseBuffer(&bo_);
-    importer_ = NULL;
+    importer_ = nullptr;
   }
 }
 
@@ -60,7 +60,7 @@ int DrmHwcBuffer::ImportBuffer(buffer_handle_t handle, Importer *importer) {
     return ret;
   }
 
-  if (importer_ != NULL) {
+  if (importer_ != nullptr) {
     importer_->ReleaseBuffer(&bo_);
   }
 
@@ -72,13 +72,12 @@ int DrmHwcBuffer::ImportBuffer(buffer_handle_t handle, Importer *importer) {
 }
 
 int DrmHwcNativeHandle::CopyBufferHandle(buffer_handle_t handle) {
-  native_handle_t *handle_copy;
+  native_handle_t *handle_copy = nullptr;
   GraphicBufferMapper &gm(GraphicBufferMapper::get());
-  int ret;
+  int ret = 0;
 
   ret = gm.getGrallocMapper().importBuffer(handle,
-                                           const_cast<buffer_handle_t *>(
-                                               &handle_copy));
+                                           (buffer_handle_t *)&handle_copy);
 
   if (ret) {
     ALOGE("Failed to import buffer handle %d", ret);
@@ -97,13 +96,13 @@ DrmHwcNativeHandle::~DrmHwcNativeHandle() {
 }
 
 void DrmHwcNativeHandle::Clear() {
-  if (handle_ != NULL) {
+  if (handle_ != nullptr) {
     GraphicBufferMapper &gm(GraphicBufferMapper::get());
     int ret = gm.freeBuffer(handle_);
     if (ret) {
       ALOGE("Failed to free buffer handle %d", ret);
     }
-    handle_ = NULL;
+    handle_ = nullptr;
   }
 }
 

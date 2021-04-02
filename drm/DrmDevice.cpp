@@ -18,34 +18,35 @@
 
 #include "DrmDevice.h"
 
-#include <cutils/properties.h>
-#include <errno.h>
 #include <fcntl.h>
-#include <log/log.h>
-#include <stdint.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cinttypes>
+#include <cstdint>
 #include <sstream>
 #include <string>
 
-static void trim_left(std::string &str) {
-  str.erase(std::begin(str),
-            std::find_if(std::begin(str), std::end(str),
-                         [](int ch) { return !std::isspace(ch); }));
+#include "utils/log.h"
+#include "utils/properties.h"
+
+static void trim_left(std::string *str) {
+  str->erase(std::begin(*str),
+             std::find_if(std::begin(*str), std::end(*str),
+                          [](int ch) { return std::isspace(ch) == 0; }));
 }
 
-static void trim_right(std::string &str) {
-  str.erase(std::find_if(std::rbegin(str), std::rend(str),
-                         [](int ch) { return !std::isspace(ch); })
-                .base(),
-            std::end(str));
+static void trim_right(std::string *str) {
+  str->erase(std::find_if(std::rbegin(*str), std::rend(*str),
+                          [](int ch) { return std::isspace(ch) == 0; })
+                 .base(),
+             std::end(*str));
 }
 
-static void trim(std::string &str) {
+static void trim(std::string *str) {
   trim_left(str);
   trim_right(str);
 }
@@ -53,25 +54,25 @@ static void trim(std::string &str) {
 namespace android {
 
 static std::vector<std::string> read_primary_display_order_prop() {
-  std::array<char, PROPERTY_VALUE_MAX> display_order_buf;
+  std::array<char, PROPERTY_VALUE_MAX> display_order_buf{};
   property_get("vendor.hwc.drm.primary_display_order", display_order_buf.data(),
                "...");
 
   std::vector<std::string> display_order;
   std::istringstream str(display_order_buf.data());
-  for (std::string conn_name = ""; std::getline(str, conn_name, ',');) {
-    trim(conn_name);
+  for (std::string conn_name; std::getline(str, conn_name, ',');) {
+    trim(&conn_name);
     display_order.push_back(std::move(conn_name));
   }
   return display_order;
 }
 
 static std::vector<DrmConnector *> make_primary_display_candidates(
-    std::vector<std::unique_ptr<DrmConnector>> &connectors) {
+    const std::vector<std::unique_ptr<DrmConnector>> &connectors) {
   std::vector<DrmConnector *> primary_candidates;
   std::transform(std::begin(connectors), std::end(connectors),
                  std::back_inserter(primary_candidates),
-                 [](std::unique_ptr<DrmConnector> &conn) {
+                 [](const std::unique_ptr<DrmConnector> &conn) {
                    return conn.get();
                  });
   primary_candidates.erase(std::remove_if(std::begin(primary_candidates),
@@ -119,7 +120,7 @@ DrmDevice::~DrmDevice() {
 
 std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
   /* TODO: Use drmOpenControl here instead */
-  fd_.Set(open(path, O_RDWR));
+  fd_.Set(open(path, O_RDWR | O_CLOEXEC));
   if (fd() < 0) {
     ALOGE("Failed to open dri %s: %s", path, strerror(errno));
     return std::make_tuple(-ENODEV, 0);
@@ -195,7 +196,7 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
     }
 
     std::vector<DrmCrtc *> possible_crtcs;
-    DrmCrtc *current_crtc = NULL;
+    DrmCrtc *current_crtc = nullptr;
     for (auto &crtc : crtcs_) {
       if ((1 << crtc->pipe()) & e->possible_crtcs)
         possible_crtcs.push_back(crtc.get());
@@ -234,7 +235,7 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
     }
 
     std::vector<DrmEncoder *> possible_encoders;
-    DrmEncoder *current_encoder = NULL;
+    DrmEncoder *current_encoder = nullptr;
     for (int j = 0; j < c->count_encoders; ++j) {
       for (auto &encoder : encoders_) {
         if (encoder->id() == c->encoders[j])
@@ -360,22 +361,22 @@ bool DrmDevice::HandlesDisplay(int display) const {
 }
 
 DrmConnector *DrmDevice::GetConnectorForDisplay(int display) const {
-  for (auto &conn : connectors_) {
+  for (const auto &conn : connectors_) {
     if (conn->display() == display)
       return conn.get();
   }
-  return NULL;
+  return nullptr;
 }
 
 DrmConnector *DrmDevice::GetWritebackConnectorForDisplay(int display) const {
-  for (auto &conn : writeback_connectors_) {
+  for (const auto &conn : writeback_connectors_) {
     if (conn->display() == display)
       return conn.get();
   }
-  return NULL;
+  return nullptr;
 }
 
-// TODO what happens when hotplugging
+// TODO(nobody): what happens when hotplugging
 DrmConnector *DrmDevice::AvailableWritebackConnector(int display) const {
   DrmConnector *writeback_conn = GetWritebackConnectorForDisplay(display);
   DrmConnector *display_conn = GetConnectorForDisplay(display);
@@ -386,7 +387,7 @@ DrmConnector *DrmDevice::AvailableWritebackConnector(int display) const {
     return writeback_conn;
 
   // Use another CRTC if available and doesn't have any connector
-  for (auto &crtc : crtcs_) {
+  for (const auto &crtc : crtcs_) {
     if (crtc->display() == display)
       continue;
     display_conn = GetConnectorForDisplay(crtc->display());
@@ -397,23 +398,23 @@ DrmConnector *DrmDevice::AvailableWritebackConnector(int display) const {
     if (writeback_conn)
       return writeback_conn;
   }
-  return NULL;
+  return nullptr;
 }
 
 DrmCrtc *DrmDevice::GetCrtcForDisplay(int display) const {
-  for (auto &crtc : crtcs_) {
+  for (const auto &crtc : crtcs_) {
     if (crtc->display() == display)
       return crtc.get();
   }
-  return NULL;
+  return nullptr;
 }
 
 DrmPlane *DrmDevice::GetPlane(uint32_t id) const {
-  for (auto &plane : planes_) {
+  for (const auto &plane : planes_) {
     if (plane->id() == id)
       return plane.get();
   }
-  return NULL;
+  return nullptr;
 }
 
 const std::vector<std::unique_ptr<DrmCrtc>> &DrmDevice::crtcs() const {
@@ -457,7 +458,9 @@ int DrmDevice::CreateDisplayPipe(DrmConnector *connector) {
     int ret = TryEncoderForDisplay(display, connector->encoder());
     if (!ret) {
       return 0;
-    } else if (ret != -EAGAIN) {
+    }
+
+    if (ret != -EAGAIN) {
       ALOGE("Could not set mode %d/%d", display, ret);
       return ret;
     }
@@ -468,7 +471,9 @@ int DrmDevice::CreateDisplayPipe(DrmConnector *connector) {
     if (!ret) {
       connector->set_encoder(enc);
       return 0;
-    } else if (ret != -EAGAIN) {
+    }
+
+    if (ret != -EAGAIN) {
       ALOGE("Could not set mode %d/%d", display, ret);
       return ret;
     }
@@ -481,7 +486,7 @@ int DrmDevice::CreateDisplayPipe(DrmConnector *connector) {
 // Attach writeback connector to the CRTC linked to the display_conn
 int DrmDevice::AttachWriteback(DrmConnector *display_conn) {
   DrmCrtc *display_crtc = display_conn->encoder()->crtc();
-  if (GetWritebackConnectorForDisplay(display_crtc->display()) != NULL) {
+  if (GetWritebackConnectorForDisplay(display_crtc->display()) != nullptr) {
     ALOGE("Display already has writeback attach to it");
     return -EINVAL;
   }
@@ -510,9 +515,8 @@ int DrmDevice::AttachWriteback(DrmConnector *display_conn) {
 }
 
 int DrmDevice::CreatePropertyBlob(void *data, size_t length,
-                                  uint32_t *blob_id) {
-  struct drm_mode_create_blob create_blob;
-  memset(&create_blob, 0, sizeof(create_blob));
+                                  uint32_t *blob_id) const {
+  struct drm_mode_create_blob create_blob {};
   create_blob.length = length;
   create_blob.data = (__u64)data;
 
@@ -525,12 +529,11 @@ int DrmDevice::CreatePropertyBlob(void *data, size_t length,
   return 0;
 }
 
-int DrmDevice::DestroyPropertyBlob(uint32_t blob_id) {
+int DrmDevice::DestroyPropertyBlob(uint32_t blob_id) const {
   if (!blob_id)
     return 0;
 
-  struct drm_mode_destroy_blob destroy_blob;
-  memset(&destroy_blob, 0, sizeof(destroy_blob));
+  struct drm_mode_destroy_blob destroy_blob {};
   destroy_blob.blob_id = (__u32)blob_id;
   int ret = drmIoctl(fd(), DRM_IOCTL_MODE_DESTROYPROPBLOB, &destroy_blob);
   if (ret) {
@@ -545,8 +548,8 @@ DrmEventListener *DrmDevice::event_listener() {
 }
 
 int DrmDevice::GetProperty(uint32_t obj_id, uint32_t obj_type,
-                           const char *prop_name, DrmProperty *property) {
-  drmModeObjectPropertiesPtr props;
+                           const char *prop_name, DrmProperty *property) const {
+  drmModeObjectPropertiesPtr props = nullptr;
 
   props = drmModeObjectGetProperties(fd(), obj_id, obj_type);
   if (!props) {
@@ -585,8 +588,8 @@ int DrmDevice::GetConnectorProperty(const DrmConnector &connector,
                      property);
 }
 
-const std::string DrmDevice::GetName() const {
-  auto ver = drmGetVersion(fd_.get());
+std::string DrmDevice::GetName() const {
+  auto *ver = drmGetVersion(fd_.get());
   if (!ver) {
     ALOGW("Failed to get drm version for fd=%d", fd_.get());
     return "generic";

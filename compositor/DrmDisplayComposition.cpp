@@ -19,11 +19,11 @@
 #include "DrmDisplayComposition.h"
 
 #include <log/log.h>
-#include <stdlib.h>
 #include <sync/sync.h>
 #include <xf86drmMode.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <unordered_set>
 
 #include "DrmDisplayCompositor.h"
@@ -31,9 +31,6 @@
 #include "drm/DrmDevice.h"
 
 namespace android {
-
-DrmDisplayComposition::~DrmDisplayComposition() {
-}
 
 int DrmDisplayComposition::Init(DrmDevice *drm, DrmCrtc *crtc,
                                 Importer *importer, Planner *planner,
@@ -75,8 +72,10 @@ int DrmDisplayComposition::SetDpmsMode(uint32_t dpms_mode) {
 }
 
 int DrmDisplayComposition::SetDisplayMode(const DrmMode &display_mode) {
-  if (!validate_composition_type(DRM_COMPOSITION_TYPE_MODESET))
+  if (!validate_composition_type(DRM_COMPOSITION_TYPE_MODESET)) {
+    ALOGE("SetDisplayMode() Failed to validate composition type");
     return -EINVAL;
+  }
   display_mode_ = display_mode;
   dpms_mode_ = DRM_MODE_DPMS_ON;
   type_ = DRM_COMPOSITION_TYPE_MODESET;
@@ -104,7 +103,7 @@ int DrmDisplayComposition::Plan(std::vector<DrmPlane *> *primary_planes,
   for (size_t i = 0; i < layers_.size(); ++i)
     to_composite.emplace(std::make_pair(i, &layers_[i]));
 
-  int ret;
+  int ret = 0;
   std::tie(ret,
            composition_planes_) = planner_->ProvisionPlanes(to_composite, crtc_,
                                                             primary_planes,
@@ -123,7 +122,7 @@ int DrmDisplayComposition::Plan(std::vector<DrmPlane *> *primary_planes,
     // make sure that source layers are ordered based on zorder
     std::sort(i.source_layers().begin(), i.source_layers().end());
 
-    std::vector<DrmPlane *> *container;
+    std::vector<DrmPlane *> *container = nullptr;
     if (i.plane()->type() == DRM_PLANE_TYPE_PRIMARY)
       container = primary_planes;
     else
@@ -211,7 +210,7 @@ static void DumpTransform(uint32_t transform, std::ostringstream *out) {
     separator = true;
   }
 
-  uint32_t valid_bits = DrmHwcTransform::kFlipH | DrmHwcTransform::kFlipH |
+  uint32_t valid_bits = DrmHwcTransform::kFlipH | DrmHwcTransform::kFlipV |
                         DrmHwcTransform::kRotate90 |
                         DrmHwcTransform::kRotate180 |
                         DrmHwcTransform::kRotate270;

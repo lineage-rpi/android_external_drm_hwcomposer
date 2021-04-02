@@ -45,7 +45,7 @@ class ResourceManager {
   }
 
  private:
-  int AddDrmDevice(std::string path);
+  int AddDrmDevice(std::string const &path);
   static bool IsKMSDev(const char *path);
 
   int num_displays_;
@@ -53,7 +53,7 @@ class ResourceManager {
   std::vector<std::shared_ptr<Importer>> importers_;
   const gralloc_module_t *gralloc_;
 
-  bool scale_with_gpu_;
+  bool scale_with_gpu_{};
 };
 }  // namespace android
 

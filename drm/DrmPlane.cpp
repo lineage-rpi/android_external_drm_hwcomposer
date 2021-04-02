@@ -17,15 +17,15 @@
 #define LOG_TAG "hwc-drm-plane"
 
 #include "DrmPlane.h"
-#include "bufferinfo/BufferInfoGetter.h"
 
-#include <errno.h>
-#include <log/log.h>
-#include <stdint.h>
-
+#include <algorithm>
+#include <cerrno>
 #include <cinttypes>
+#include <cstdint>
 
 #include "DrmDevice.h"
+#include "bufferinfo/BufferInfoGetter.h"
+#include "utils/log.h"
 
 namespace android {
 
@@ -45,7 +45,7 @@ int DrmPlane::Init() {
     return ret;
   }
 
-  uint64_t type;
+  uint64_t type = 0;
   std::tie(ret, type) = p.value();
   if (ret) {
     ALOGE("Failed to get plane type property value");
@@ -161,7 +161,7 @@ uint32_t DrmPlane::id() const {
 }
 
 bool DrmPlane::GetCrtcSupported(const DrmCrtc &crtc) const {
-  return !!((1 << crtc.pipe()) & possible_crtc_mask_);
+  return ((1 << crtc.pipe()) & possible_crtc_mask_) != 0;
 }
 
 uint32_t DrmPlane::type() const {
