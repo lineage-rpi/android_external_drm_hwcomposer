@@ -19,18 +19,20 @@
 
 #include "DrmHwcTwo.h"
 
-#include <cutils/properties.h>
 #include <hardware/hardware.h>
 #include <hardware/hwcomposer2.h>
-#include <log/log.h>
 #include <sync/sync.h>
 
 #include <cinttypes>
+#include <iostream>
+#include <sstream>
 #include <string>
 
 #include "backend/BackendManager.h"
 #include "bufferinfo/BufferInfoGetter.h"
 #include "compositor/DrmDisplayComposition.h"
+#include "utils/log.h"
+#include "utils/properties.h"
 
 namespace android {
 
@@ -59,8 +61,8 @@ HWC2::Error DrmHwcTwo::CreateDisplay(hwc2_display_t displ,
     ALOGE("Failed to get crtc for display %d", static_cast<int>(displ));
     return HWC2::Error::BadDisplay;
   }
-  std::vector<DrmPlane *> display_planes;
-  for (auto &plane : drm->planes()) {
+  auto display_planes = std::vector<DrmPlane *>();
+  for (const auto &plane : drm->planes()) {
     if (plane->GetCrtcSupported(*crtc))
       display_planes.push_back(plane.get());
   }
@@ -84,8 +86,8 @@ HWC2::Error DrmHwcTwo::Init() {
     }
   }
 
-  auto &drm_devices = resource_manager_.getDrmDevices();
-  for (auto &device : drm_devices) {
+  const auto &drm_devices = resource_manager_.getDrmDevices();
+  for (const auto &device : drm_devices) {
     // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
     device->RegisterHotplugHandler(new DrmHotplugHandler(this, device.get()));
   }
@@ -120,35 +122,33 @@ std::string DrmHwcTwo::HwcDisplay::DumpDelta(
     return "No stats yet";
   double ratio = 1.0 - double(delta.gpu_pixops_) / double(delta.total_pixops_);
 
-  return (std::stringstream()
-          << " Total frames count: " << delta.total_frames_ << "\n"
-          << " Failed to test commit frames: " << delta.failed_kms_validate_
-          << "\n"
-          << " Failed to commit frames: " << delta.failed_kms_present_ << "\n"
-          << ((delta.failed_kms_present_ > 0)
-                  ? " !!! Internal failure, FIX it please\n"
-                  : "")
-          << " Flattened frames: " << delta.frames_flattened_ << "\n"
-          << " Pixel operations (free units)"
-          << " : [TOTAL: " << delta.total_pixops_
-          << " / GPU: " << delta.gpu_pixops_ << "]\n"
-          << " Composition efficiency: " << ratio)
-      .str();
+  std::stringstream ss;
+  ss << " Total frames count: " << delta.total_frames_ << "\n"
+     << " Failed to test commit frames: " << delta.failed_kms_validate_ << "\n"
+     << " Failed to commit frames: " << delta.failed_kms_present_ << "\n"
+     << ((delta.failed_kms_present_ > 0)
+             ? " !!! Internal failure, FIX it please\n"
+             : "")
+     << " Flattened frames: " << delta.frames_flattened_ << "\n"
+     << " Pixel operations (free units)"
+     << " : [TOTAL: " << delta.total_pixops_ << " / GPU: " << delta.gpu_pixops_
+     << "]\n"
+     << " Composition efficiency: " << ratio;
+
+  return ss.str();
 }
 
 std::string DrmHwcTwo::HwcDisplay::Dump() {
-  auto out = (std::stringstream()
-              << "- Display on: " << connector_->name() << "\n"
-              << "  Flattening state: " << compositor_.GetFlatteningState()
-              << "\n"
-              << "Statistics since system boot:\n"
-              << DumpDelta(total_stats_) << "\n\n"
-              << "Statistics since last dumpsys request:\n"
-              << DumpDelta(total_stats_.minus(prev_stats_)) << "\n\n")
-                 .str();
+  std::stringstream ss;
+  ss << "- Display on: " << connector_->name() << "\n"
+     << "  Flattening state: " << compositor_.GetFlatteningState() << "\n"
+     << "Statistics since system boot:\n"
+     << DumpDelta(total_stats_) << "\n\n"
+     << "Statistics since last dumpsys request:\n"
+     << DumpDelta(total_stats_.minus(prev_stats_)) << "\n\n";
 
   memcpy(&prev_stats_, &total_stats_, sizeof(Stats));
-  return out;
+  return ss.str();
 }
 
 void DrmHwcTwo::Dump(uint32_t *outSize, char *outBuffer) {
@@ -185,8 +185,8 @@ HWC2::Error DrmHwcTwo::RegisterCallback(int32_t descriptor,
   switch (static_cast<HWC2::Callback>(descriptor)) {
     case HWC2::Callback::Hotplug: {
       SetHotplugCallback(data, function);
-      auto &drm_devices = resource_manager_.getDrmDevices();
-      for (auto &device : drm_devices)
+      const auto &drm_devices = resource_manager_.getDrmDevices();
+      for (const auto &device : drm_devices)
         HandleInitialHotplugState(device.get());
       break;
     }
@@ -619,20 +619,7 @@ void DrmHwcTwo::HwcDisplay::AddFenceToPresentFence(int fd) {
   }
 }
 
-bool DrmHwcTwo::HwcDisplay::HardwareSupportsLayerType(
-    HWC2::Composition comp_type) {
-  return comp_type == HWC2::Composition::Device ||
-         comp_type == HWC2::Composition::Cursor;
-}
-
 HWC2::Error DrmHwcTwo::HwcDisplay::CreateComposition(bool test) {
-  std::vector<DrmCompositionDisplayLayersMap> layers_map;
-  layers_map.emplace_back();
-  DrmCompositionDisplayLayersMap &map = layers_map.back();
-
-  map.display = static_cast<int>(handle_);
-  map.geometry_changed = true;  // TODO(nobody): Fix this
-
   // order the layers by z-order
   bool use_client_layer = false;
   uint32_t client_z_order = UINT32_MAX;
@@ -657,6 +644,8 @@ HWC2::Error DrmHwcTwo::HwcDisplay::CreateComposition(bool test) {
   if (z_map.empty())
     return HWC2::Error::BadLayer;
 
+  std::vector<DrmHwcLayer> composition_layers;
+
   // now that they're ordered by z, add them to the composition
   for (std::pair<const uint32_t, DrmHwcTwo::HwcLayer *> &l : z_map) {
     DrmHwcLayer layer;
@@ -666,15 +655,15 @@ HWC2::Error DrmHwcTwo::HwcDisplay::CreateComposition(bool test) {
       ALOGE("Failed to import layer, ret=%d", ret);
       return HWC2::Error::NoResources;
     }
-    map.layers.emplace_back(std::move(layer));
+    composition_layers.emplace_back(std::move(layer));
   }
 
-  std::unique_ptr<DrmDisplayComposition> composition = compositor_
-                                                           .CreateComposition();
-  composition->Init(drm_, crtc_, importer_.get(), planner_.get(), frame_no_);
+  auto composition = std::make_unique<DrmDisplayComposition>(crtc_,
+                                                             planner_.get());
 
   // TODO(nobody): Don't always assume geometry changed
-  int ret = composition->SetLayers(map.layers.data(), map.layers.size(), true);
+  int ret = composition->SetLayers(composition_layers.data(),
+                                   composition_layers.size(), true);
   if (ret) {
     ALOGE("Failed to set layers in the composition ret=%d", ret);
     return HWC2::Error::BadLayer;
@@ -748,9 +737,8 @@ HWC2::Error DrmHwcTwo::HwcDisplay::SetActiveConfig(hwc2_config_t config) {
     return HWC2::Error::BadConfig;
   }
 
-  std::unique_ptr<DrmDisplayComposition> composition = compositor_
-                                                           .CreateComposition();
-  composition->Init(drm_, crtc_, importer_.get(), planner_.get(), frame_no_);
+  auto composition = std::make_unique<DrmDisplayComposition>(crtc_,
+                                                             planner_.get());
   int ret = composition->SetDisplayMode(*mode);
   if (ret) {
     return HWC2::Error::BadConfig;
@@ -854,9 +842,8 @@ HWC2::Error DrmHwcTwo::HwcDisplay::SetPowerMode(int32_t mode_in) {
       return HWC2::Error::BadParameter;
   };
 
-  std::unique_ptr<DrmDisplayComposition> composition = compositor_
-                                                           .CreateComposition();
-  composition->Init(drm_, crtc_, importer_.get(), planner_.get(), frame_no_);
+  auto composition = std::make_unique<DrmDisplayComposition>(crtc_,
+                                                             planner_.get());
   composition->SetDpmsMode(dpms_value);
   int ret = compositor_.ApplyComposition(std::move(composition));
   if (ret) {
@@ -872,35 +859,28 @@ HWC2::Error DrmHwcTwo::HwcDisplay::SetVsyncEnabled(int32_t enabled) {
   return HWC2::Error::None;
 }
 
-uint32_t DrmHwcTwo::HwcDisplay::CalcPixOps(
-    std::map<uint32_t, DrmHwcTwo::HwcLayer *> &z_map, size_t first_z,
-    size_t size) {
-  uint32_t pixops = 0;
-  for (std::pair<const uint32_t, DrmHwcTwo::HwcLayer *> &l : z_map) {
-    if (l.first >= first_z && l.first < first_z + size) {
-      hwc_rect_t df = l.second->display_frame();
-      pixops += (df.right - df.left) * (df.bottom - df.top);
-    }
-  }
-  return pixops;
-}
-
-void DrmHwcTwo::HwcDisplay::MarkValidated(
-    std::map<uint32_t, DrmHwcTwo::HwcLayer *> &z_map, size_t client_first_z,
-    size_t client_size) {
-  for (std::pair<const uint32_t, DrmHwcTwo::HwcLayer *> &l : z_map) {
-    if (l.first >= client_first_z && l.first < client_first_z + client_size)
-      l.second->set_validated_type(HWC2::Composition::Client);
-    else
-      l.second->set_validated_type(HWC2::Composition::Device);
-  }
-}
-
 HWC2::Error DrmHwcTwo::HwcDisplay::ValidateDisplay(uint32_t *num_types,
                                                    uint32_t *num_requests) {
   supported(__func__);
 
   return backend_->ValidateDisplay(this, num_types, num_requests);
+}
+
+std::vector<DrmHwcTwo::HwcLayer *>
+DrmHwcTwo::HwcDisplay::GetOrderLayersByZPos() {
+  std::vector<DrmHwcTwo::HwcLayer *> ordered_layers;
+  ordered_layers.reserve(layers_.size());
+
+  for (auto &[handle, layer] : layers_) {
+    ordered_layers.emplace_back(&layer);
+  }
+
+  std::sort(std::begin(ordered_layers), std::end(ordered_layers),
+            [](const DrmHwcTwo::HwcLayer *lhs, const DrmHwcTwo::HwcLayer *rhs) {
+              return lhs->z_order() < rhs->z_order();
+            });
+
+  return ordered_layers;
 }
 
 #if PLATFORM_SDK_VERSION > 29
@@ -1169,9 +1149,9 @@ void DrmHwcTwo::HwcLayer::PopulateDrmLayer(DrmHwcLayer *layer) {
   layer->sf_handle = buffer_;
   layer->acquire_fence = acquire_fence_.Release();
   layer->release_fence = std::move(release_fence);
-  layer->SetDisplayFrame(display_frame_);
+  layer->display_frame = display_frame_;
   layer->alpha = lround(65535.0F * alpha_);
-  layer->SetSourceCrop(source_crop_);
+  layer->source_crop = source_crop_;
   layer->SetTransform(static_cast<int32_t>(transform_));
   layer->dataspace = dataspace_;
 }
@@ -1187,7 +1167,7 @@ void DrmHwcTwo::HandleDisplayHotplug(hwc2_display_t displayid, int state) {
 }
 
 void DrmHwcTwo::HandleInitialHotplugState(DrmDevice *drmDevice) {
-  for (auto &conn : drmDevice->connectors()) {
+  for (const auto &conn : drmDevice->connectors()) {
     if (conn->state() != DRM_MODE_CONNECTED)
       continue;
     HandleDisplayHotplug(conn->display(), conn->state());
@@ -1195,7 +1175,7 @@ void DrmHwcTwo::HandleInitialHotplugState(DrmDevice *drmDevice) {
 }
 
 void DrmHwcTwo::DrmHotplugHandler::HandleEvent(uint64_t timestamp_us) {
-  for (auto &conn : drm_->connectors()) {
+  for (const auto &conn : drm_->connectors()) {
     drmModeConnection old_state = conn->state();
     drmModeConnection cur_state = conn->UpdateModes()
                                       ? DRM_MODE_UNKNOWNCONNECTION

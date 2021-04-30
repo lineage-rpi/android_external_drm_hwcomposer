@@ -21,6 +21,7 @@
 #include <hardware/hwcomposer.h>
 #include <pthread.h>
 
+#include <functional>
 #include <memory>
 #include <sstream>
 #include <tuple>
@@ -64,7 +65,6 @@ class DrmDisplayCompositor {
     refresh_callback_hook_ = reinterpret_cast<HWC2_PFN_REFRESH>(hook);
   }
 
-  std::unique_ptr<DrmDisplayComposition> CreateComposition() const;
   std::unique_ptr<DrmDisplayComposition> CreateInitializedComposition() const;
   int ApplyComposition(std::unique_ptr<DrmDisplayComposition> composition);
   int TestComposition(DrmDisplayComposition *composition);

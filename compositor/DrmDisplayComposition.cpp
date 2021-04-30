@@ -18,7 +18,6 @@
 
 #include "DrmDisplayComposition.h"
 
-#include <log/log.h>
 #include <sync/sync.h>
 #include <xf86drmMode.h>
 
@@ -29,19 +28,13 @@
 #include "DrmDisplayCompositor.h"
 #include "Planner.h"
 #include "drm/DrmDevice.h"
+#include "utils/log.h"
 
 namespace android {
 
-int DrmDisplayComposition::Init(DrmDevice *drm, DrmCrtc *crtc,
-                                Importer *importer, Planner *planner,
-                                uint64_t frame_no) {
-  drm_ = drm;
-  crtc_ = crtc;  // Can be NULL if we haven't modeset yet
-  importer_ = importer;
-  planner_ = planner;
-  frame_no_ = frame_no;
-
-  return 0;
+DrmDisplayComposition::DrmDisplayComposition(DrmCrtc *crtc, Planner *planner)
+    : crtc_(crtc),  // Can be NULL if we haven't modeset yet
+      planner_(planner) {
 }
 
 bool DrmDisplayComposition::validate_composition_type(DrmCompositionType des) {
@@ -83,8 +76,7 @@ int DrmDisplayComposition::SetDisplayMode(const DrmMode &display_mode) {
 }
 
 int DrmDisplayComposition::AddPlaneDisable(DrmPlane *plane) {
-  composition_planes_.emplace_back(DrmCompositionPlane::Type::kDisable, plane,
-                                   crtc_);
+  composition_planes_.emplace_back(DrmCompositionPlane::Type::kDisable, plane);
   return 0;
 }
 
