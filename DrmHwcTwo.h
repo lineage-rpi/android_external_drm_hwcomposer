@@ -42,16 +42,14 @@ class DrmHwcTwo : public hwc2_device_t {
 
   HWC2::Error Init();
 
-  hwc2_callback_data_t hotplug_callback_data_ = NULL;
-  HWC2_PFN_HOTPLUG hotplug_callback_hook_ = NULL;
-  std::mutex hotplug_callback_lock;
+  std::pair<HWC2_PFN_HOTPLUG, hwc2_callback_data_t> hotplug_callback_{};
+  std::pair<HWC2_PFN_VSYNC, hwc2_callback_data_t> vsync_callback_{};
+#if PLATFORM_SDK_VERSION > 29
+  std::pair<HWC2_PFN_VSYNC_2_4, hwc2_callback_data_t> vsync_2_4_callback_{};
+#endif
+  std::pair<HWC2_PFN_REFRESH, hwc2_callback_data_t> refresh_callback_{};
 
-  void SetHotplugCallback(hwc2_callback_data_t data,
-                          hwc2_function_pointer_t hook) {
-    const std::lock_guard<std::mutex> lock(hotplug_callback_lock);
-    hotplug_callback_data_ = data;
-    hotplug_callback_hook_ = reinterpret_cast<HWC2_PFN_HOTPLUG>(hook);
-  }
+  std::mutex callback_lock_;
 
   class HwcLayer {
    public:
@@ -102,10 +100,10 @@ class DrmHwcTwo : public hwc2_device_t {
     }
 
     // Layer hooks
-    HWC2::Error SetCursorPosition(int32_t x, int32_t y);
+    HWC2::Error SetCursorPosition(int32_t /*x*/, int32_t /*y*/);
     HWC2::Error SetLayerBlendMode(int32_t mode);
     HWC2::Error SetLayerBuffer(buffer_handle_t buffer, int32_t acquire_fence);
-    HWC2::Error SetLayerColor(hwc_color_t color);
+    HWC2::Error SetLayerColor(hwc_color_t /*color*/);
     HWC2::Error SetLayerCompositionType(int32_t type);
     HWC2::Error SetLayerDataspace(int32_t dataspace);
     HWC2::Error SetLayerDisplayFrame(hwc_rect_t frame);
@@ -133,30 +131,24 @@ class DrmHwcTwo : public hwc2_device_t {
     HWC2::Composition sf_type_ = HWC2::Composition::Invalid;
     HWC2::Composition validated_type_ = HWC2::Composition::Invalid;
 
-    HWC2::BlendMode blending_ = HWC2::BlendMode::None;
     buffer_handle_t buffer_ = NULL;
     hwc_rect_t display_frame_;
     float alpha_ = 1.0f;
     hwc_frect_t source_crop_;
-    int32_t cursor_x_;
-    int32_t cursor_y_;
-    hwc_color_t layer_color_;
-    HWC2::Transform transform_ = HWC2::Transform::None;
+    DrmHwcTransform transform_ = DrmHwcTransform::kIdentity;
     uint32_t z_order_ = 0;
-    android_dataspace_t dataspace_ = HAL_DATASPACE_UNKNOWN;
+    DrmHwcBlending blending_ = DrmHwcBlending::kNone;
+    DrmHwcColorSpace color_space_ = DrmHwcColorSpace::kUndefined;
+    DrmHwcSampleRange sample_range_ = DrmHwcSampleRange::kUndefined;
   };
 
   class HwcDisplay {
    public:
     HwcDisplay(ResourceManager *resource_manager, DrmDevice *drm,
-               hwc2_display_t handle, HWC2::DisplayType type);
+               hwc2_display_t handle, HWC2::DisplayType type, DrmHwcTwo *hwc2);
     HwcDisplay(const HwcDisplay &) = delete;
     HWC2::Error Init(std::vector<DrmPlane *> *planes);
 
-    void RegisterVsyncCallback(hwc2_callback_data_t data,
-                               hwc2_function_pointer_t func);
-    void RegisterRefreshCallback(hwc2_callback_data_t data,
-                                 hwc2_function_pointer_t func);
     HWC2::Error CreateComposition(bool test);
     std::vector<DrmHwcTwo::HwcLayer *> GetOrderLayersByZPos();
 
@@ -305,6 +297,8 @@ class DrmHwcTwo : public hwc2_device_t {
     void AddFenceToPresentFence(UniqueFd fd);
 
     constexpr static size_t MATRIX_SIZE = 16;
+
+    DrmHwcTwo *hwc2_;
 
     ResourceManager *resource_manager_;
     DrmDevice *drm_;

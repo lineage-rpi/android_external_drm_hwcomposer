@@ -29,7 +29,7 @@
 
 namespace android {
 
-ResourceManager::ResourceManager() : num_displays_(0), gralloc_(nullptr) {
+ResourceManager::ResourceManager() : num_displays_(0) {
 }
 
 int ResourceManager::Init() {
@@ -51,7 +51,7 @@ int ResourceManager::Init() {
       if (stat(path.str().c_str(), &buf))
         break;
 
-      if (IsKMSDev(path.str().c_str()))
+      if (DrmDevice::IsKMSDev(path.str().c_str()))
         ret = AddDrmDevice(path.str());
     }
   }
@@ -70,8 +70,7 @@ int ResourceManager::Init() {
     return -EINVAL;
   }
 
-  return hw_get_module(GRALLOC_HARDWARE_MODULE_ID,
-                       (const hw_module_t **)&gralloc_);
+  return 0;
 }
 
 int ResourceManager::AddDrmDevice(const std::string &path) {
@@ -84,53 +83,11 @@ int ResourceManager::AddDrmDevice(const std::string &path) {
   return ret;
 }
 
-DrmConnector *ResourceManager::AvailableWritebackConnector(int display) {
-  DrmDevice *drm_device = GetDrmDevice(display);
-  DrmConnector *writeback_conn = nullptr;
-  if (drm_device) {
-    writeback_conn = drm_device->AvailableWritebackConnector(display);
-    if (writeback_conn)
-      return writeback_conn;
-  }
-  for (auto &drm : drms_) {
-    if (drm.get() == drm_device)
-      continue;
-    writeback_conn = drm->AvailableWritebackConnector(display);
-    if (writeback_conn)
-      return writeback_conn;
-  }
-  return writeback_conn;
-}
-
-bool ResourceManager::IsKMSDev(const char *path) {
-  int fd = open(path, O_RDWR | O_CLOEXEC);
-  if (fd < 0)
-    return false;
-
-  auto *res = drmModeGetResources(fd);
-  if (!res) {
-    close(fd);
-    return false;
-  }
-
-  bool is_kms = res->count_crtcs > 0 && res->count_connectors > 0 &&
-                res->count_encoders > 0;
-
-  drmModeFreeResources(res);
-  close(fd);
-
-  return is_kms;
-}
-
 DrmDevice *ResourceManager::GetDrmDevice(int display) {
   for (auto &drm : drms_) {
     if (drm->HandlesDisplay(display))
       return drm.get();
   }
   return nullptr;
-}
-
-const gralloc_module_t *ResourceManager::gralloc() {
-  return gralloc_;
 }
 }  // namespace android

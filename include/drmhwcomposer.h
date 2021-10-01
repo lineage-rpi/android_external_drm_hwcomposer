@@ -32,7 +32,20 @@ namespace android {
 
 class DrmFbIdHandle;
 
-enum DrmHwcTransform {
+enum class DrmHwcColorSpace : int32_t {
+  kUndefined,
+  kItuRec601,
+  kItuRec709,
+  kItuRec2020,
+};
+
+enum class DrmHwcSampleRange : int32_t {
+  kUndefined,
+  kFullRange,
+  kLimitedRange,
+};
+
+enum DrmHwcTransform : uint32_t {
   kIdentity = 0,
   kFlipH = 1 << 0,
   kFlipV = 1 << 1,
@@ -42,9 +55,9 @@ enum DrmHwcTransform {
 };
 
 enum class DrmHwcBlending : int32_t {
-  kNone = HWC_BLENDING_NONE,
-  kPreMult = HWC_BLENDING_PREMULT,
-  kCoverage = HWC_BLENDING_COVERAGE,
+  kNone,
+  kPreMult,
+  kCoverage,
 };
 
 struct DrmHwcLayer {
@@ -53,18 +66,17 @@ struct DrmHwcLayer {
   std::shared_ptr<DrmFbIdHandle> FbIdHandle;
 
   int gralloc_buffer_usage = 0;
-  uint32_t transform;
+  DrmHwcTransform transform{};
   DrmHwcBlending blending = DrmHwcBlending::kNone;
   uint16_t alpha = 0xffff;
   hwc_frect_t source_crop;
   hwc_rect_t display_frame;
-  android_dataspace_t dataspace;
+  DrmHwcColorSpace color_space;
+  DrmHwcSampleRange sample_range;
 
   UniqueFd acquire_fence;
 
   int ImportBuffer(DrmDevice *drmDevice);
-
-  void SetTransform(int32_t sf_transform);
 
   bool protected_usage() const {
     return (gralloc_buffer_usage & GRALLOC_USAGE_PROTECTED) ==

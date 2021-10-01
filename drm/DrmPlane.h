@@ -48,23 +48,10 @@ class DrmPlane {
   bool IsFormatSupported(uint32_t format) const;
   bool HasNonRgbFormat() const;
 
-  const DrmProperty &crtc_property() const;
-  const DrmProperty &fb_property() const;
-  const DrmProperty &crtc_x_property() const;
-  const DrmProperty &crtc_y_property() const;
-  const DrmProperty &crtc_w_property() const;
-  const DrmProperty &crtc_h_property() const;
-  const DrmProperty &src_x_property() const;
-  const DrmProperty &src_y_property() const;
-  const DrmProperty &src_w_property() const;
-  const DrmProperty &src_h_property() const;
+  auto AtomicSetState(drmModeAtomicReq &pset, DrmHwcLayer &layer, uint32_t zpos,
+                      uint32_t crtc_id) -> int;
+  auto AtomicDisablePlane(drmModeAtomicReq &pset) -> int;
   const DrmProperty &zpos_property() const;
-  const DrmProperty &rotation_property() const;
-  const DrmProperty &alpha_property() const;
-  const DrmProperty &blend_property() const;
-  const DrmProperty &in_fence_fd_property() const;
-  const DrmProperty &color_encoding_propery() const;
-  const DrmProperty &color_range_property() const;
 
  private:
   DrmDevice *drm_;
@@ -93,6 +80,11 @@ class DrmPlane {
   DrmProperty in_fence_fd_property_;
   DrmProperty color_encoding_propery_;
   DrmProperty color_range_property_;
+
+  std::map<DrmHwcBlending, uint64_t> blending_enum_map_;
+  std::map<DrmHwcColorSpace, uint64_t> color_encoding_enum_map_;
+  std::map<DrmHwcSampleRange, uint64_t> color_range_enum_map_;
+  std::map<DrmHwcTransform, uint64_t> transform_enum_map_;
 };
 }  // namespace android
 

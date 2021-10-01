@@ -34,6 +34,7 @@
 #include "drm/DrmCrtc.h"
 #include "drm/DrmDevice.h"
 #include "drm/DrmPlane.h"
+#include "drm/DrmUnique.h"
 #include "utils/autolock.h"
 #include "utils/log.h"
 
@@ -47,20 +48,6 @@ std::ostream &operator<<(std::ostream &str, FlatteningState state) {
 
   return str << flattenting_state_str[static_cast<int>(state)];
 }
-
-class CompositorVsyncCallback : public VsyncCallback {
- public:
-  explicit CompositorVsyncCallback(DrmDisplayCompositor *compositor)
-      : compositor_(compositor) {
-  }
-
-  void Callback(int display, int64_t timestamp) override {
-    compositor_->Vsync(display, timestamp);
-  }
-
- private:
-  DrmDisplayCompositor *compositor_;
-};
 
 DrmDisplayCompositor::DrmDisplayCompositor()
     : resource_manager_(nullptr),
@@ -102,7 +89,10 @@ DrmDisplayCompositor::~DrmDisplayCompositor() {
   pthread_mutex_destroy(&lock_);
 }
 
-int DrmDisplayCompositor::Init(ResourceManager *resource_manager, int display) {
+auto DrmDisplayCompositor::Init(ResourceManager *resource_manager, int display,
+                                std::function<void()> client_refresh_callback)
+    -> int {
+  client_refresh_callback_ = std::move(client_refresh_callback);
   resource_manager_ = resource_manager;
   display_ = display;
   DrmDevice *drm = resource_manager_->GetDrmDevice(display);
@@ -117,9 +107,19 @@ int DrmDisplayCompositor::Init(ResourceManager *resource_manager, int display) {
   }
   planner_ = Planner::CreateInstance(drm);
 
-  vsync_worker_.Init(drm, display_);
-  auto callback = std::make_shared<CompositorVsyncCallback>(this);
-  vsync_worker_.RegisterCallback(callback);
+  vsync_worker_.Init(drm, display_, [this](int64_t timestamp) {
+    AutoLock lock(&lock_, "DrmDisplayCompositor::Init()");
+    if (lock.Lock())
+      return;
+    flatten_countdown_--;
+    if (!CountdownExpired())
+      return;
+    lock.Unlock();
+    int ret = FlattenActiveComposition();
+    ALOGV("scene flattening triggered for display %d at timestamp %" PRIu64
+          " result = %d \n",
+          display_, timestamp, ret);
+  });
 
   initialized_ = true;
   return 0;
@@ -165,7 +165,7 @@ DrmDisplayCompositor::GetActiveModeResolution() {
 }
 
 int DrmDisplayCompositor::DisablePlanes(DrmDisplayComposition *display_comp) {
-  drmModeAtomicReqPtr pset = drmModeAtomicAlloc();
+  auto pset = MakeDrmModeAtomicReqUnique();
   if (!pset) {
     ALOGE("Failed to allocate property set");
     return -ENOMEM;
@@ -175,26 +175,17 @@ int DrmDisplayCompositor::DisablePlanes(DrmDisplayComposition *display_comp) {
   std::vector<DrmCompositionPlane> &comp_planes = display_comp
                                                       ->composition_planes();
   for (DrmCompositionPlane &comp_plane : comp_planes) {
-    DrmPlane *plane = comp_plane.plane();
-    ret = drmModeAtomicAddProperty(pset, plane->id(),
-                                   plane->crtc_property().id(), 0) < 0 ||
-          drmModeAtomicAddProperty(pset, plane->id(), plane->fb_property().id(),
-                                   0) < 0;
-    if (ret) {
-      ALOGE("Failed to add plane %d disable to pset", plane->id());
-      drmModeAtomicFree(pset);
-      return ret;
+    if (comp_plane.plane()->AtomicDisablePlane(*pset) != 0) {
+      return -EINVAL;
     }
   }
   DrmDevice *drm = resource_manager_->GetDrmDevice(display_);
-  ret = drmModeAtomicCommit(drm->fd(), pset, 0, drm);
+  ret = drmModeAtomicCommit(drm->fd(), pset.get(), 0, drm);
   if (ret) {
     ALOGE("Failed to commit pset ret=%d\n", ret);
-    drmModeAtomicFree(pset);
     return ret;
   }
 
-  drmModeAtomicFree(pset);
   return 0;
 }
 
@@ -221,57 +212,28 @@ int DrmDisplayCompositor::CommitFrame(DrmDisplayComposition *display_comp,
     return -ENODEV;
   }
 
-  drmModeAtomicReqPtr pset = drmModeAtomicAlloc();
+  auto pset = MakeDrmModeAtomicReqUnique();
   if (!pset) {
     ALOGE("Failed to allocate property set");
     return -ENOMEM;
   }
 
-  if (crtc->out_fence_ptr_property().id() != 0) {
-    ret = drmModeAtomicAddProperty(pset, crtc->id(),
-                                   crtc->out_fence_ptr_property().id(),
-                                   (uint64_t)&out_fences[crtc->pipe()]);
-    if (ret < 0) {
-      ALOGE("Failed to add OUT_FENCE_PTR property to pset: %d", ret);
-      drmModeAtomicFree(pset);
-      return ret;
-    }
+  if (crtc->out_fence_ptr_property() &&
+      !crtc->out_fence_ptr_property()
+           .AtomicSet(*pset, (uint64_t)&out_fences[crtc->pipe()])) {
+    return -EINVAL;
   }
 
-  if (mode_.needs_modeset) {
-    ret = drmModeAtomicAddProperty(pset, crtc->id(),
-                                   crtc->active_property().id(), 1);
-    if (ret < 0) {
-      ALOGE("Failed to add crtc active to pset\n");
-      drmModeAtomicFree(pset);
-      return ret;
-    }
-
-    ret = drmModeAtomicAddProperty(pset, crtc->id(), crtc->mode_property().id(),
-                                   mode_.blob_id) < 0 ||
-          drmModeAtomicAddProperty(pset, connector->id(),
-                                   connector->crtc_id_property().id(),
-                                   crtc->id()) < 0;
-    if (ret) {
-      ALOGE("Failed to add blob %d to pset", mode_.blob_id);
-      drmModeAtomicFree(pset);
-      return ret;
-    }
+  if (mode_.needs_modeset &&
+      (!crtc->active_property().AtomicSet(*pset, 1) ||
+       !crtc->mode_property().AtomicSet(*pset, mode_.blob_id) ||
+       !connector->crtc_id_property().AtomicSet(*pset, crtc->id()))) {
+    return -EINVAL;
   }
 
   for (DrmCompositionPlane &comp_plane : comp_planes) {
     DrmPlane *plane = comp_plane.plane();
     std::vector<size_t> &source_layers = comp_plane.source_layers();
-
-    int fb_id = -1;
-    int fence_fd = -1;
-    hwc_rect_t display_frame;
-    hwc_frect_t source_crop;
-    uint64_t rotation = 0;
-    uint64_t alpha = 0xFFFF;
-    uint64_t blend = UINT64_MAX;
-    uint64_t color_encoding = UINT64_MAX;
-    uint64_t color_range = UINT64_MAX;
 
     if (comp_plane.type() != DrmCompositionPlane::Type::kDisable) {
       if (source_layers.size() > 1) {
@@ -283,221 +245,17 @@ int DrmDisplayCompositor::CommitFrame(DrmDisplayComposition *display_comp,
       if (source_layers.empty() || source_layers.front() >= layers.size()) {
         ALOGE("Source layer index %zu out of bounds %zu type=%d",
               source_layers.front(), layers.size(), comp_plane.type());
-        break;
+        return -EINVAL;
       }
       DrmHwcLayer &layer = layers[source_layers.front()];
-      if (!layer.FbIdHandle) {
-        ALOGE("Expected a valid framebuffer for pset");
-        break;
+
+      if (plane->AtomicSetState(*pset, layer, source_layers.front(),
+                                crtc->id()) != 0) {
+        return -EINVAL;
       }
-      fb_id = layer.FbIdHandle->GetFbId();
-      fence_fd = layer.acquire_fence.Get();
-      display_frame = layer.display_frame;
-      source_crop = layer.source_crop;
-      alpha = layer.alpha;
-
-      if (plane->blend_property().id()) {
-        switch (layer.blending) {
-          case DrmHwcBlending::kPreMult:
-            std::tie(blend, ret) = plane->blend_property().GetEnumValueWithName(
-                "Pre-multiplied");
-            break;
-          case DrmHwcBlending::kCoverage:
-            std::tie(blend, ret) = plane->blend_property().GetEnumValueWithName(
-                "Coverage");
-            break;
-          case DrmHwcBlending::kNone:
-          default:
-            std::tie(blend, ret) = plane->blend_property().GetEnumValueWithName(
-                "None");
-            break;
-        }
-      }
-
-      if (plane->zpos_property().id() &&
-          !plane->zpos_property().is_immutable()) {
-        uint64_t min_zpos = 0;
-
-        // Ignore ret and use min_zpos as 0 by default
-        std::tie(std::ignore, min_zpos) = plane->zpos_property().range_min();
-
-        ret = drmModeAtomicAddProperty(pset, plane->id(),
-                                       plane->zpos_property().id(),
-                                       source_layers.front() + min_zpos) < 0;
-        if (ret) {
-          ALOGE("Failed to add zpos property %d to plane %d",
-                plane->zpos_property().id(), plane->id());
-          break;
-        }
-      }
-
-      rotation = 0;
-      if (layer.transform & DrmHwcTransform::kFlipH)
-        rotation |= DRM_MODE_REFLECT_X;
-      if (layer.transform & DrmHwcTransform::kFlipV)
-        rotation |= DRM_MODE_REFLECT_Y;
-      if (layer.transform & DrmHwcTransform::kRotate90)
-        rotation |= DRM_MODE_ROTATE_90;
-      else if (layer.transform & DrmHwcTransform::kRotate180)
-        rotation |= DRM_MODE_ROTATE_180;
-      else if (layer.transform & DrmHwcTransform::kRotate270)
-        rotation |= DRM_MODE_ROTATE_270;
-      else
-        rotation |= DRM_MODE_ROTATE_0;
-
-      if (fence_fd >= 0) {
-        int prop_id = plane->in_fence_fd_property().id();
-        if (prop_id == 0) {
-          ALOGE("Failed to get IN_FENCE_FD property id");
-          break;
-        }
-        ret = drmModeAtomicAddProperty(pset, plane->id(), prop_id, fence_fd);
-        if (ret < 0) {
-          ALOGE("Failed to add IN_FENCE_FD property to pset: %d", ret);
-          break;
-        }
-      }
-
-      if (plane->color_encoding_propery().id()) {
-        switch (layer.dataspace & HAL_DATASPACE_STANDARD_MASK) {
-          case HAL_DATASPACE_STANDARD_BT709:
-            std::tie(color_encoding,
-                     ret) = plane->color_encoding_propery()
-                                .GetEnumValueWithName("ITU-R BT.709 YCbCr");
-            break;
-          case HAL_DATASPACE_STANDARD_BT601_625:
-          case HAL_DATASPACE_STANDARD_BT601_625_UNADJUSTED:
-          case HAL_DATASPACE_STANDARD_BT601_525:
-          case HAL_DATASPACE_STANDARD_BT601_525_UNADJUSTED:
-            std::tie(color_encoding,
-                     ret) = plane->color_encoding_propery()
-                                .GetEnumValueWithName("ITU-R BT.601 YCbCr");
-            break;
-          case HAL_DATASPACE_STANDARD_BT2020:
-          case HAL_DATASPACE_STANDARD_BT2020_CONSTANT_LUMINANCE:
-            std::tie(color_encoding,
-                     ret) = plane->color_encoding_propery()
-                                .GetEnumValueWithName("ITU-R BT.2020 YCbCr");
-            break;
-        }
-      }
-
-      if (plane->color_range_property().id()) {
-        switch (layer.dataspace & HAL_DATASPACE_RANGE_MASK) {
-          case HAL_DATASPACE_RANGE_FULL:
-            std::tie(color_range,
-                     ret) = plane->color_range_property()
-                                .GetEnumValueWithName("YCbCr full range");
-            break;
-          case HAL_DATASPACE_RANGE_LIMITED:
-            std::tie(color_range,
-                     ret) = plane->color_range_property()
-                                .GetEnumValueWithName("YCbCr limited range");
-            break;
-        }
-      }
-    }
-
-    // Disable the plane if there's no framebuffer
-    if (fb_id < 0) {
-      ret = drmModeAtomicAddProperty(pset, plane->id(),
-                                     plane->crtc_property().id(), 0) < 0 ||
-            drmModeAtomicAddProperty(pset, plane->id(),
-                                     plane->fb_property().id(), 0) < 0;
-      if (ret) {
-        ALOGE("Failed to add plane %d disable to pset", plane->id());
-        break;
-      }
-      continue;
-    }
-
-    ret = drmModeAtomicAddProperty(pset, plane->id(),
-                                   plane->crtc_property().id(), crtc->id()) < 0;
-    ret |= drmModeAtomicAddProperty(pset, plane->id(),
-                                    plane->fb_property().id(), fb_id) < 0;
-    ret |= drmModeAtomicAddProperty(pset, plane->id(),
-                                    plane->crtc_x_property().id(),
-                                    display_frame.left) < 0;
-    ret |= drmModeAtomicAddProperty(pset, plane->id(),
-                                    plane->crtc_y_property().id(),
-                                    display_frame.top) < 0;
-    ret |= drmModeAtomicAddProperty(pset, plane->id(),
-                                    plane->crtc_w_property().id(),
-                                    display_frame.right - display_frame.left) <
-           0;
-    ret |= drmModeAtomicAddProperty(pset, plane->id(),
-                                    plane->crtc_h_property().id(),
-                                    display_frame.bottom - display_frame.top) <
-           0;
-    ret |= drmModeAtomicAddProperty(pset, plane->id(),
-                                    plane->src_x_property().id(),
-                                    (int)(source_crop.left) << 16) < 0;
-    ret |= drmModeAtomicAddProperty(pset, plane->id(),
-                                    plane->src_y_property().id(),
-                                    (int)(source_crop.top) << 16) < 0;
-    ret |= drmModeAtomicAddProperty(pset, plane->id(),
-                                    plane->src_w_property().id(),
-                                    (int)(source_crop.right - source_crop.left)
-                                        << 16) < 0;
-    ret |= drmModeAtomicAddProperty(pset, plane->id(),
-                                    plane->src_h_property().id(),
-                                    (int)(source_crop.bottom - source_crop.top)
-                                        << 16) < 0;
-    if (ret) {
-      ALOGE("Failed to add plane %d to set", plane->id());
-      break;
-    }
-
-    if (plane->rotation_property().id()) {
-      ret = drmModeAtomicAddProperty(pset, plane->id(),
-                                     plane->rotation_property().id(),
-                                     rotation) < 0;
-      if (ret) {
-        ALOGE("Failed to add rotation property %d to plane %d",
-              plane->rotation_property().id(), plane->id());
-        break;
-      }
-    }
-
-    if (plane->alpha_property().id()) {
-      ret = drmModeAtomicAddProperty(pset, plane->id(),
-                                     plane->alpha_property().id(), alpha) < 0;
-      if (ret) {
-        ALOGE("Failed to add alpha property %d to plane %d",
-              plane->alpha_property().id(), plane->id());
-        break;
-      }
-    }
-
-    if (plane->blend_property().id() && blend != UINT64_MAX) {
-      ret = drmModeAtomicAddProperty(pset, plane->id(),
-                                     plane->blend_property().id(), blend) < 0;
-      if (ret) {
-        ALOGE("Failed to add pixel blend mode property %d to plane %d",
-              plane->blend_property().id(), plane->id());
-        break;
-      }
-    }
-
-    if (plane->color_encoding_propery().id() && color_encoding != UINT64_MAX) {
-      ret = drmModeAtomicAddProperty(pset, plane->id(),
-                                     plane->color_encoding_propery().id(),
-                                     color_encoding) < 0;
-      if (ret) {
-        ALOGE("Failed to add COLOR_ENCODING property %d to plane %d",
-              plane->color_encoding_propery().id(), plane->id());
-        break;
-      }
-    }
-
-    if (plane->color_range_property().id() && color_range != UINT64_MAX) {
-      ret = drmModeAtomicAddProperty(pset, plane->id(),
-                                     plane->color_range_property().id(),
-                                     color_range) < 0;
-      if (ret) {
-        ALOGE("Failed to add COLOR_RANGE property %d to plane %d",
-              plane->color_range_property().id(), plane->id());
-        break;
+    } else {
+      if (plane->AtomicDisablePlane(*pset) != 0) {
+        return -EINVAL;
       }
     }
   }
@@ -507,16 +265,13 @@ int DrmDisplayCompositor::CommitFrame(DrmDisplayComposition *display_comp,
     if (test_only)
       flags |= DRM_MODE_ATOMIC_TEST_ONLY;
 
-    ret = drmModeAtomicCommit(drm->fd(), pset, flags, drm);
+    ret = drmModeAtomicCommit(drm->fd(), pset.get(), flags, drm);
     if (ret) {
       if (!test_only)
         ALOGE("Failed to commit pset ret=%d\n", ret);
-      drmModeAtomicFree(pset);
       return ret;
     }
   }
-  if (pset)
-    drmModeAtomicFree(pset);
 
   if (!test_only && mode_.needs_modeset) {
     ret = drm->DestroyPropertyBlob(mode_.old_blob_id);
@@ -539,7 +294,7 @@ int DrmDisplayCompositor::CommitFrame(DrmDisplayComposition *display_comp,
     mode_.needs_modeset = false;
   }
 
-  if (crtc->out_fence_ptr_property().id()) {
+  if (crtc->out_fence_ptr_property()) {
     display_comp->out_fence_ = UniqueFd((int)out_fences[crtc->pipe()]);
   }
 
@@ -689,9 +444,7 @@ bool DrmDisplayCompositor::IsFlatteningNeeded() const {
 }
 
 int DrmDisplayCompositor::FlattenOnClient() {
-  const std::lock_guard<std::mutex> lock(refresh_callback_lock);
-
-  if (refresh_callback_hook_ && refresh_callback_data_) {
+  if (client_refresh_callback_) {
     {
       AutoLock lock(&lock_, __func__);
       if (!IsFlatteningNeeded()) {
@@ -707,7 +460,7 @@ int DrmDisplayCompositor::FlattenOnClient() {
         "No writeback connector available, "
         "falling back to client composition");
     SetFlattening(FlatteningState::kClientRequested);
-    refresh_callback_hook_(refresh_callback_data_, display_);
+    client_refresh_callback_();
     return 0;
   }
 
@@ -721,20 +474,6 @@ int DrmDisplayCompositor::FlattenActiveComposition() {
 
 bool DrmDisplayCompositor::CountdownExpired() const {
   return flatten_countdown_ <= 0;
-}
-
-void DrmDisplayCompositor::Vsync(int display, int64_t timestamp) {
-  AutoLock lock(&lock_, __func__);
-  if (lock.Lock())
-    return;
-  flatten_countdown_--;
-  if (!CountdownExpired())
-    return;
-  lock.Unlock();
-  int ret = FlattenActiveComposition();
-  ALOGV("scene flattening triggered for display %d at timestamp %" PRIu64
-        " result = %d \n",
-        display, timestamp, ret);
 }
 
 void DrmDisplayCompositor::Dump(std::ostringstream *out) const {
@@ -754,7 +493,9 @@ void DrmDisplayCompositor::Dump(std::ostringstream *out) const {
 
   uint64_t cur_ts = ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
   uint64_t num_ms = (cur_ts - dump_last_timestamp_ns_) / (1000 * 1000);
-  float fps = num_ms ? (num_frames * 1000.0F) / (num_ms) : 0.0F;
+  float fps = num_ms ? static_cast<float>(num_frames) * 1000.0F /
+                           static_cast<float>(num_ms)
+                     : 0.0F;
 
   *out << "--DrmDisplayCompositor[" << display_
        << "]: num_frames=" << num_frames << " num_ms=" << num_ms

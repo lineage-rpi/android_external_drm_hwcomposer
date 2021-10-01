@@ -161,7 +161,7 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
     return std::make_tuple(-EACCES, 0);
   }
 
-  drmModeResPtr res = drmModeGetResources(fd());
+  auto res = MakeDrmModeResUnique(fd());
   if (!res) {
     ALOGE("Failed to get DrmDevice resources");
     return std::make_tuple(-ENODEV, 0);
@@ -177,15 +177,14 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
   bool found_primary = num_displays != 0;
 
   for (int i = 0; !ret && i < res->count_crtcs; ++i) {
-    drmModeCrtcPtr c = drmModeGetCrtc(fd(), res->crtcs[i]);
+    auto c = MakeDrmModeCrtcUnique(fd(), res->crtcs[i]);
     if (!c) {
       ALOGE("Failed to get crtc %d", res->crtcs[i]);
       ret = -ENODEV;
       break;
     }
 
-    std::unique_ptr<DrmCrtc> crtc(new DrmCrtc(this, c, i));
-    drmModeFreeCrtc(c);
+    std::unique_ptr<DrmCrtc> crtc(new DrmCrtc(this, c.get(), i));
 
     ret = crtc->Init();
     if (ret) {
@@ -195,9 +194,9 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
     crtcs_.emplace_back(std::move(crtc));
   }
 
-  std::vector<int> possible_clones;
+  std::vector<uint32_t> possible_clones;
   for (int i = 0; !ret && i < res->count_encoders; ++i) {
-    drmModeEncoderPtr e = drmModeGetEncoder(fd(), res->encoders[i]);
+    auto e = MakeDrmModeEncoderUnique(fd(), res->encoders[i]);
     if (!e) {
       ALOGE("Failed to get encoder %d", res->encoders[i]);
       ret = -ENODEV;
@@ -215,9 +214,8 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
     }
 
     std::unique_ptr<DrmEncoder> enc(
-        new DrmEncoder(e, current_crtc, possible_crtcs));
+        new DrmEncoder(e.get(), current_crtc, possible_crtcs));
     possible_clones.push_back(e->possible_clones);
-    drmModeFreeEncoder(e);
 
     encoders_.emplace_back(std::move(enc));
   }
@@ -229,7 +227,7 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
   }
 
   for (int i = 0; !ret && i < res->count_connectors; ++i) {
-    drmModeConnectorPtr c = drmModeGetConnector(fd(), res->connectors[i]);
+    auto c = MakeDrmModeConnectorUnique(fd(), res->connectors[i]);
     if (!c) {
       ALOGE("Failed to get connector %d", res->connectors[i]);
       ret = -ENODEV;
@@ -248,9 +246,7 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
     }
 
     std::unique_ptr<DrmConnector> conn(
-        new DrmConnector(this, c, current_encoder, possible_encoders));
-
-    drmModeFreeConnector(c);
+        new DrmConnector(this, c.get(), current_encoder, possible_encoders));
 
     ret = conn->Init();
     if (ret) {
@@ -299,30 +295,25 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
     }
   }
 
-  if (res)
-    drmModeFreeResources(res);
-
   // Catch-all for the above loops
   if (ret)
     return std::make_tuple(ret, 0);
 
-  drmModePlaneResPtr plane_res = drmModeGetPlaneResources(fd());
+  auto plane_res = MakeDrmModePlaneResUnique(fd());
   if (!plane_res) {
     ALOGE("Failed to get plane resources");
     return std::make_tuple(-ENOENT, 0);
   }
 
   for (uint32_t i = 0; i < plane_res->count_planes; ++i) {
-    drmModePlanePtr p = drmModeGetPlane(fd(), plane_res->planes[i]);
+    auto p = MakeDrmModePlaneUnique(fd(), plane_res->planes[i]);
     if (!p) {
       ALOGE("Failed to get plane %d", plane_res->planes[i]);
       ret = -ENODEV;
       break;
     }
 
-    std::unique_ptr<DrmPlane> plane(new DrmPlane(this, p));
-
-    drmModeFreePlane(p);
+    std::unique_ptr<DrmPlane> plane(new DrmPlane(this, p.get()));
 
     ret = plane->Init();
     if (ret) {
@@ -332,7 +323,6 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
 
     planes_.emplace_back(std::move(plane));
   }
-  drmModeFreePlaneResources(plane_res);
   if (ret)
     return std::make_tuple(ret, 0);
 
@@ -560,7 +550,7 @@ int DrmDevice::GetProperty(uint32_t obj_id, uint32_t obj_type,
   for (int i = 0; !found && (size_t)i < props->count_props; ++i) {
     drmModePropertyPtr p = drmModeGetProperty(fd(), props->props[i]);
     if (!strcmp(p->name, prop_name)) {
-      property->Init(p, props->prop_values[i]);
+      property->Init(obj_id, p, props->prop_values[i]);
       found = true;
     }
     drmModeFreeProperty(p);
@@ -598,4 +588,22 @@ std::string DrmDevice::GetName() const {
   drmFreeVersion(ver);
   return name;
 }
+
+auto DrmDevice::IsKMSDev(const char *path) -> bool {
+  auto fd = UniqueFd(open(path, O_RDWR | O_CLOEXEC));
+  if (!fd) {
+    return false;
+  }
+
+  auto res = MakeDrmModeResUnique(fd.Get());
+  if (!res) {
+    return false;
+  }
+
+  bool is_kms = res->count_crtcs > 0 && res->count_connectors > 0 &&
+                res->count_encoders > 0;
+
+  return is_kms;
+}
+
 }  // namespace android

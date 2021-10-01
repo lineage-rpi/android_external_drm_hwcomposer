@@ -31,8 +31,6 @@ class ResourceManager {
   ResourceManager &operator=(const ResourceManager &) = delete;
   int Init();
   DrmDevice *GetDrmDevice(int display);
-  const gralloc_module_t *gralloc();
-  DrmConnector *AvailableWritebackConnector(int display);
   const std::vector<std::unique_ptr<DrmDevice>> &getDrmDevices() const {
     return drms_;
   }
@@ -45,11 +43,9 @@ class ResourceManager {
 
  private:
   int AddDrmDevice(std::string const &path);
-  static bool IsKMSDev(const char *path);
 
   int num_displays_;
   std::vector<std::unique_ptr<DrmDevice>> drms_;
-  const gralloc_module_t *gralloc_;
 
   bool scale_with_gpu_{};
 };
