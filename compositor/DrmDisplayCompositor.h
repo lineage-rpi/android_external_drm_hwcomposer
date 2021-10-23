@@ -32,34 +32,19 @@
 #include "drm/VSyncWorker.h"
 #include "drmhwcomposer.h"
 
-// If a scene is still for this number of vblanks flatten it to reduce power
-// consumption.
-#define FLATTEN_COUNTDOWN_INIT 60
-
 namespace android {
-
-enum class FlatteningState {
-  kNone,
-  kNotNeeded,
-  kClientRequested,
-  kClientDone,
-};
-
-std::ostream &operator<<(std::ostream &str, FlatteningState state);
 
 class DrmDisplayCompositor {
  public:
   DrmDisplayCompositor();
   ~DrmDisplayCompositor();
 
-  auto Init(ResourceManager *resource_manager, int display,
-            std::function<void()> client_refresh_callback) -> int;
+  auto Init(ResourceManager *resource_manager, int display) -> int;
 
   std::unique_ptr<DrmDisplayComposition> CreateInitializedComposition() const;
   int ApplyComposition(std::unique_ptr<DrmDisplayComposition> composition);
   int TestComposition(DrmDisplayComposition *composition);
   int Composite();
-  void Dump(std::ostringstream *out) const;
   void ClearDisplay();
   UniqueFd TakeOutFence() {
     if (!active_composition_) {
@@ -68,27 +53,16 @@ class DrmDisplayCompositor {
     return std::move(active_composition_->out_fence_);
   }
 
-  FlatteningState GetFlatteningState() const;
-  uint32_t GetFlattenedFramesCount() const;
-  bool ShouldFlattenOnClient() const;
-
   std::tuple<uint32_t, uint32_t, int> GetActiveModeResolution();
 
  private:
-  std::function<void()> client_refresh_callback_;
   struct ModeState {
-    bool needs_modeset = false;
     DrmMode mode;
-    uint32_t blob_id = 0;
-    uint32_t old_blob_id = 0;
+    DrmModeUserPropertyBlobUnique blob;
+    DrmModeUserPropertyBlobUnique old_blob;
   };
 
   DrmDisplayCompositor(const DrmDisplayCompositor &) = delete;
-
-  // We'll wait for acquire fences to fire for kAcquireWaitTimeoutMs,
-  // kAcquireWaitTries times, logging a warning in between.
-  static const int kAcquireWaitTries = 5;
-  static const int kAcquireWaitTimeoutMs = 100;
 
   int CommitFrame(DrmDisplayComposition *display_comp, bool test_only);
   int ApplyDpms(DrmDisplayComposition *display_comp);
@@ -97,14 +71,7 @@ class DrmDisplayCompositor {
   void ApplyFrame(std::unique_ptr<DrmDisplayComposition> composition,
                   int status);
 
-  void SetFlattening(FlatteningState new_state);
-  bool IsFlatteningNeeded() const;
-  int FlattenActiveComposition();
-  int FlattenOnClient();
-
-  bool CountdownExpired() const;
-
-  std::tuple<int, uint32_t> CreateModeBlob(const DrmMode &mode);
+  auto CreateModeBlob(const DrmMode &mode) -> DrmModeUserPropertyBlobUnique;
 
   ResourceManager *resource_manager_;
   int display_;
@@ -117,21 +84,7 @@ class DrmDisplayCompositor {
 
   ModeState mode_;
 
-  // mutable since we need to acquire in Dump()
-  mutable pthread_mutex_t lock_{};
-
-  // State tracking progress since our last Dump(). These are mutable since
-  // we need to reset them on every Dump() call.
-  mutable uint64_t dump_frames_composited_;
-  mutable uint64_t dump_last_timestamp_ns_;
-  VSyncWorker vsync_worker_;
-  int64_t flatten_countdown_;
   std::unique_ptr<Planner> planner_;
-
-  FlatteningState flattening_state_;
-  uint32_t frames_flattened_;
-
-  std::function<void(int)> refresh_display_cb_;
 };
 }  // namespace android
 

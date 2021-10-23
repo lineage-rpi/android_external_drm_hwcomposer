@@ -69,20 +69,19 @@ class DrmDevice {
   DrmPlane *GetPlane(uint32_t id) const;
   DrmEventListener *event_listener();
 
-  int GetPlaneProperty(const DrmPlane &plane, const char *prop_name,
-                       DrmProperty *property);
   int GetCrtcProperty(const DrmCrtc &crtc, const char *prop_name,
-                      DrmProperty *property);
+                      DrmProperty *property) const;
   int GetConnectorProperty(const DrmConnector &connector, const char *prop_name,
-                           DrmProperty *property);
+                           DrmProperty *property) const;
 
   std::string GetName() const;
 
   const std::vector<std::unique_ptr<DrmCrtc>> &crtcs() const;
   uint32_t next_mode_id();
 
-  int CreatePropertyBlob(void *data, size_t length, uint32_t *blob_id) const;
-  int DestroyPropertyBlob(uint32_t blob_id) const;
+  auto RegisterUserPropertyBlob(void *data, size_t length) const
+      -> DrmModeUserPropertyBlobUnique;
+
   bool HandlesDisplay(int display) const;
   void RegisterHotplugHandler(DrmEventHandler *handler) {
     event_listener_.RegisterHotplugHandler(handler);
@@ -98,10 +97,11 @@ class DrmDevice {
 
   static auto IsKMSDev(const char *path) -> bool;
 
- private:
-  int TryEncoderForDisplay(int display, DrmEncoder *enc);
   int GetProperty(uint32_t obj_id, uint32_t obj_type, const char *prop_name,
                   DrmProperty *property) const;
+
+ private:
+  int TryEncoderForDisplay(int display, DrmEncoder *enc);
 
   int CreateDisplayPipe(DrmConnector *connector);
   int AttachWriteback(DrmConnector *display_conn);
