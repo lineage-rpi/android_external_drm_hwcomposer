@@ -149,7 +149,7 @@ class DrmHwcTwo : public hwc2_device_t {
     HwcDisplay(const HwcDisplay &) = delete;
     HWC2::Error Init(std::vector<DrmPlane *> *planes);
 
-    HWC2::Error CreateComposition(bool test);
+    HWC2::Error CreateComposition(AtomicCommitArgs &a_args);
     std::vector<DrmHwcTwo::HwcLayer *> GetOrderLayersByZPos();
 
     void ClearDisplay();
@@ -327,8 +327,6 @@ class DrmHwcTwo : public hwc2_device_t {
     std::atomic_int flattenning_state_{ClientFlattenningState::NotRequired};
     VSyncWorker flattening_vsync_worker_;
 
-    void AddFenceToPresentFence(UniqueFd fd);
-
     constexpr static size_t MATRIX_SIZE = 16;
 
     DrmHwcTwo *hwc2_;
@@ -351,7 +349,6 @@ class DrmHwcTwo : public hwc2_device_t {
     uint32_t layer_idx_ = 0;
     std::map<hwc2_layer_t, HwcLayer> layers_;
     HwcLayer client_layer_;
-    UniqueFd present_fence_;
     int32_t color_mode_{};
     std::array<float, MATRIX_SIZE> color_transform_matrix_{};
     android_color_transform_t color_transform_hint_;
@@ -360,18 +357,6 @@ class DrmHwcTwo : public hwc2_device_t {
     Stats total_stats_;
     Stats prev_stats_;
     std::string DumpDelta(DrmHwcTwo::HwcDisplay::Stats delta);
-  };
-
-  class DrmHotplugHandler : public DrmEventHandler {
-   public:
-    DrmHotplugHandler(DrmHwcTwo *hwc2, DrmDevice *drm)
-        : hwc2_(hwc2), drm_(drm) {
-    }
-    void HandleEvent(uint64_t timestamp_us);
-
-   private:
-    DrmHwcTwo *hwc2_;
-    DrmDevice *drm_;
   };
 
  private:
@@ -441,6 +426,8 @@ class DrmHwcTwo : public hwc2_device_t {
   HWC2::Error CreateDisplay(hwc2_display_t displ, HWC2::DisplayType type);
   void HandleDisplayHotplug(hwc2_display_t displayid, int state);
   void HandleInitialHotplugState(DrmDevice *drmDevice);
+
+  void HandleHotplugUEvent();
 
   ResourceManager resource_manager_;
   std::map<hwc2_display_t, HwcDisplay> displays_;

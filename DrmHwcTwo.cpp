@@ -87,11 +87,9 @@ HWC2::Error DrmHwcTwo::Init() {
     }
   }
 
-  const auto &drm_devices = resource_manager_.getDrmDevices();
-  for (const auto &device : drm_devices) {
-    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
-    device->RegisterHotplugHandler(new DrmHotplugHandler(this, device.get()));
-  }
+  resource_manager_.GetUEventListener()->RegisterHotplugHandler(
+      [this] { HandleHotplugUEvent(); });
+
   return ret;
 }
 
@@ -253,7 +251,8 @@ DrmHwcTwo::HwcDisplay::HwcDisplay(ResourceManager *resource_manager,
 }
 
 void DrmHwcTwo::HwcDisplay::ClearDisplay() {
-  compositor_.ClearDisplay();
+  AtomicCommitArgs a_args = {.clear_active_composition = true};
+  compositor_.ExecuteAtomicCommit(a_args);
 }
 
 HWC2::Error DrmHwcTwo::HwcDisplay::Init(std::vector<DrmPlane *> *planes) {
@@ -659,20 +658,7 @@ HWC2::Error DrmHwcTwo::HwcDisplay::GetReleaseFences(uint32_t *num_elements,
   return HWC2::Error::None;
 }
 
-void DrmHwcTwo::HwcDisplay::AddFenceToPresentFence(UniqueFd fd) {
-  if (!fd) {
-    return;
-  }
-
-  if (present_fence_) {
-    present_fence_ = UniqueFd(
-        sync_merge("dc_present", present_fence_.Get(), fd.Get()));
-  } else {
-    present_fence_ = std::move(fd);
-  }
-}
-
-HWC2::Error DrmHwcTwo::HwcDisplay::CreateComposition(bool test) {
+HWC2::Error DrmHwcTwo::HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
   // order the layers by z-order
   bool use_client_layer = false;
   uint32_t client_z_order = UINT32_MAX;
@@ -711,12 +697,12 @@ HWC2::Error DrmHwcTwo::HwcDisplay::CreateComposition(bool test) {
     composition_layers.emplace_back(std::move(layer));
   }
 
-  auto composition = std::make_unique<DrmDisplayComposition>(crtc_,
+  auto composition = std::make_shared<DrmDisplayComposition>(crtc_,
                                                              planner_.get());
 
   // TODO(nobody): Don't always assume geometry changed
   int ret = composition->SetLayers(composition_layers.data(),
-                                   composition_layers.size(), true);
+                                   composition_layers.size());
   if (ret) {
     ALOGE("Failed to set layers in the composition ret=%d", ret);
     return HWC2::Error::BadLayer;
@@ -740,14 +726,11 @@ HWC2::Error DrmHwcTwo::HwcDisplay::CreateComposition(bool test) {
     i = overlay_planes.erase(i);
   }
 
-  if (test) {
-    ret = compositor_.TestComposition(composition.get());
-  } else {
-    ret = compositor_.ApplyComposition(std::move(composition));
-    AddFenceToPresentFence(compositor_.TakeOutFence());
-  }
+  a_args.composition = composition;
+  ret = compositor_.ExecuteAtomicCommit(a_args);
+
   if (ret) {
-    if (!test)
+    if (!a_args.test_only)
       ALOGE("Failed to apply the frame composition ret=%d", ret);
     return HWC2::Error::BadParameter;
   }
@@ -763,7 +746,9 @@ HWC2::Error DrmHwcTwo::HwcDisplay::PresentDisplay(int32_t *present_fence) {
 
   ++total_stats_.total_frames_;
 
-  ret = CreateComposition(false);
+  AtomicCommitArgs a_args{};
+  ret = CreateComposition(a_args);
+
   if (ret != HWC2::Error::None)
     ++total_stats_.failed_kms_present_;
 
@@ -775,7 +760,7 @@ HWC2::Error DrmHwcTwo::HwcDisplay::PresentDisplay(int32_t *present_fence) {
   if (ret != HWC2::Error::None)
     return ret;
 
-  *present_fence = present_fence_.Release();
+  *present_fence = a_args.out_fence.Release();
 
   ++frame_no_;
   return HWC2::Error::None;
@@ -793,15 +778,14 @@ HWC2::Error DrmHwcTwo::HwcDisplay::SetActiveConfig(hwc2_config_t config) {
     return HWC2::Error::BadConfig;
   }
 
-  auto composition = std::make_unique<DrmDisplayComposition>(crtc_,
-                                                             planner_.get());
-  int ret = composition->SetDisplayMode(*mode);
-  if (ret) {
-    return HWC2::Error::BadConfig;
-  }
-  ret = compositor_.ApplyComposition(std::move(composition));
-  if (ret) {
-    ALOGE("Failed to queue dpms composition on %d", ret);
+  AtomicCommitArgs a_args = {
+      .display_mode = *mode,
+      .clear_active_composition = true,
+  };
+
+  int err = compositor_.ExecuteAtomicCommit(a_args);
+  if (err != 0) {
+    ALOGE("Failed to queue mode changing commit %d", err);
     return HWC2::Error::BadConfig;
   }
 
@@ -883,14 +867,15 @@ HWC2::Error DrmHwcTwo::HwcDisplay::SetOutputBuffer(buffer_handle_t buffer,
 
 HWC2::Error DrmHwcTwo::HwcDisplay::SetPowerMode(int32_t mode_in) {
   supported(__func__);
-  uint64_t dpms_value = 0;
   auto mode = static_cast<HWC2::PowerMode>(mode_in);
+  AtomicCommitArgs a_args{};
+
   switch (mode) {
     case HWC2::PowerMode::Off:
-      dpms_value = DRM_MODE_DPMS_OFF;
+      a_args.active = false;
       break;
     case HWC2::PowerMode::On:
-      dpms_value = DRM_MODE_DPMS_ON;
+      a_args.active = true;
       break;
     case HWC2::PowerMode::Doze:
     case HWC2::PowerMode::DozeSuspend:
@@ -900,12 +885,9 @@ HWC2::Error DrmHwcTwo::HwcDisplay::SetPowerMode(int32_t mode_in) {
       return HWC2::Error::BadParameter;
   };
 
-  auto composition = std::make_unique<DrmDisplayComposition>(crtc_,
-                                                             planner_.get());
-  composition->SetDpmsMode(dpms_value);
-  int ret = compositor_.ApplyComposition(std::move(composition));
-  if (ret) {
-    ALOGE("Failed to apply the dpms composition ret=%d", ret);
+  int err = compositor_.ExecuteAtomicCommit(a_args);
+  if (err) {
+    ALOGE("Failed to apply the dpms composition err=%d", err);
     return HWC2::Error::BadParameter;
   }
   return HWC2::Error::None;
@@ -1283,30 +1265,32 @@ void DrmHwcTwo::HandleInitialHotplugState(DrmDevice *drmDevice) {
   }
 }
 
-void DrmHwcTwo::DrmHotplugHandler::HandleEvent(uint64_t timestamp_us) {
-  for (const auto &conn : drm_->connectors()) {
-    drmModeConnection old_state = conn->state();
-    drmModeConnection cur_state = conn->UpdateModes()
-                                      ? DRM_MODE_UNKNOWNCONNECTION
-                                      : conn->state();
+void DrmHwcTwo::HandleHotplugUEvent() {
+  for (const auto &drm : resource_manager_.getDrmDevices()) {
+    for (const auto &conn : drm->connectors()) {
+      drmModeConnection old_state = conn->state();
+      drmModeConnection cur_state = conn->UpdateModes()
+                                        ? DRM_MODE_UNKNOWNCONNECTION
+                                        : conn->state();
 
-    if (cur_state == old_state)
-      continue;
+      if (cur_state == old_state)
+        continue;
 
-    ALOGI("%s event @%" PRIu64 " for connector %u on display %d",
-          cur_state == DRM_MODE_CONNECTED ? "Plug" : "Unplug", timestamp_us,
-          conn->id(), conn->display());
+      ALOGI("%s event for connector %u on display %d",
+            cur_state == DRM_MODE_CONNECTED ? "Plug" : "Unplug", conn->id(),
+            conn->display());
 
-    int display_id = conn->display();
-    if (cur_state == DRM_MODE_CONNECTED) {
-      auto &display = hwc2_->displays_.at(display_id);
-      display.ChosePreferredConfig();
-    } else {
-      auto &display = hwc2_->displays_.at(display_id);
-      display.ClearDisplay();
+      int display_id = conn->display();
+      if (cur_state == DRM_MODE_CONNECTED) {
+        auto &display = displays_.at(display_id);
+        display.ChosePreferredConfig();
+      } else {
+        auto &display = displays_.at(display_id);
+        display.ClearDisplay();
+      }
+
+      HandleDisplayHotplug(display_id, cur_state);
     }
-
-    hwc2_->HandleDisplayHotplug(display_id, cur_state);
   }
 }
 

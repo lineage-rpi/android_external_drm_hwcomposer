@@ -40,21 +40,6 @@
 
 namespace android {
 
-DrmDisplayCompositor::DrmDisplayCompositor()
-    : resource_manager_(nullptr),
-      display_(-1),
-      initialized_(false),
-      active_(false),
-      use_hw_overlays_(true) {
-}
-
-DrmDisplayCompositor::~DrmDisplayCompositor() {
-  if (!initialized_)
-    return;
-
-  active_composition_.reset();
-}
-
 auto DrmDisplayCompositor::Init(ResourceManager *resource_manager, int display)
     -> int {
   resource_manager_ = resource_manager;
@@ -82,56 +67,30 @@ DrmDisplayCompositor::CreateInitializedComposition() const {
   return std::make_unique<DrmDisplayComposition>(crtc, planner_.get());
 }
 
-std::tuple<uint32_t, uint32_t, int>
-DrmDisplayCompositor::GetActiveModeResolution() {
-  DrmDevice *drm = resource_manager_->GetDrmDevice(display_);
-  DrmConnector *connector = drm->GetConnectorForDisplay(display_);
-  if (connector == nullptr) {
-    ALOGE("Failed to determine display mode: no connector for display %d",
-          display_);
-    return std::make_tuple(0, 0, -ENODEV);
-  }
-
-  const DrmMode &mode = connector->active_mode();
-  return std::make_tuple(mode.h_display(), mode.v_display(), 0);
-}
-
-int DrmDisplayCompositor::DisablePlanes(DrmDisplayComposition *display_comp) {
-  auto pset = MakeDrmModeAtomicReqUnique();
-  if (!pset) {
-    ALOGE("Failed to allocate property set");
-    return -ENOMEM;
-  }
-
-  int ret = 0;
-  std::vector<DrmCompositionPlane> &comp_planes = display_comp
-                                                      ->composition_planes();
-  for (DrmCompositionPlane &comp_plane : comp_planes) {
-    if (comp_plane.plane()->AtomicDisablePlane(*pset) != 0) {
-      return -EINVAL;
-    }
-  }
-  DrmDevice *drm = resource_manager_->GetDrmDevice(display_);
-  ret = drmModeAtomicCommit(drm->fd(), pset.get(), 0, drm);
-  if (ret) {
-    ALOGE("Failed to commit pset ret=%d\n", ret);
-    return ret;
-  }
-
-  return 0;
-}
-
-int DrmDisplayCompositor::CommitFrame(DrmDisplayComposition *display_comp,
-                                      bool test_only) {
+auto DrmDisplayCompositor::CommitFrame(AtomicCommitArgs &args) -> int {
   ATRACE_CALL();
 
-  int ret = 0;
+  if (args.active && *args.active == active_kms_data.active_state) {
+    /* Don't set the same state twice */
+    args.active.reset();
+  }
 
-  std::vector<DrmHwcLayer> &layers = display_comp->layers();
-  std::vector<DrmCompositionPlane> &comp_planes = display_comp
-                                                      ->composition_planes();
+  if (!args.HasInputs()) {
+    /* nothing to do */
+    return 0;
+  }
+
+  if (!active_kms_data.active_state) {
+    /* Force activate display */
+    args.active = true;
+  }
+
+  if (args.clear_active_composition && args.composition) {
+    ALOGE("%s: Invalid arguments", __func__);
+    return -EINVAL;
+  }
+
   DrmDevice *drm = resource_manager_->GetDrmDevice(display_);
-  uint64_t out_fences[drm->crtcs().size()];
 
   DrmConnector *connector = drm->GetConnectorForDisplay(display_);
   if (!connector) {
@@ -150,178 +109,133 @@ int DrmDisplayCompositor::CommitFrame(DrmDisplayComposition *display_comp,
     return -ENOMEM;
   }
 
+  int64_t out_fence = -1;
   if (crtc->out_fence_ptr_property() &&
-      !crtc->out_fence_ptr_property()
-           .AtomicSet(*pset, (uint64_t)&out_fences[crtc->pipe()])) {
+      !crtc->out_fence_ptr_property().AtomicSet(*pset, (uint64_t)&out_fence)) {
     return -EINVAL;
   }
 
-  if (mode_.blob &&
-      (!crtc->active_property().AtomicSet(*pset, 1) ||
-       !crtc->mode_property().AtomicSet(*pset, *mode_.blob) ||
-       !connector->crtc_id_property().AtomicSet(*pset, crtc->id()))) {
-    return -EINVAL;
+  DrmModeUserPropertyBlobUnique mode_blob;
+
+  if (args.active) {
+    if (!crtc->active_property().AtomicSet(*pset, *args.active) ||
+        !connector->crtc_id_property().AtomicSet(*pset, crtc->id())) {
+      return -EINVAL;
+    }
   }
 
-  for (DrmCompositionPlane &comp_plane : comp_planes) {
-    DrmPlane *plane = comp_plane.plane();
-    std::vector<size_t> &source_layers = comp_plane.source_layers();
+  if (args.display_mode) {
+    mode_blob = args.display_mode.value().CreateModeBlob(
+        *resource_manager_->GetDrmDevice(display_));
 
-    if (comp_plane.type() != DrmCompositionPlane::Type::kDisable) {
-      if (source_layers.size() > 1) {
-        ALOGE("Can't handle more than one source layer sz=%zu type=%d",
-              source_layers.size(), comp_plane.type());
-        continue;
-      }
+    if (!mode_blob) {
+      ALOGE("Failed to create mode_blob");
+      return -EINVAL;
+    }
 
-      if (source_layers.empty() || source_layers.front() >= layers.size()) {
-        ALOGE("Source layer index %zu out of bounds %zu type=%d",
-              source_layers.front(), layers.size(), comp_plane.type());
-        return -EINVAL;
-      }
-      DrmHwcLayer &layer = layers[source_layers.front()];
+    if (!crtc->mode_property().AtomicSet(*pset, *mode_blob)) {
+      return -EINVAL;
+    }
+  }
 
-      if (plane->AtomicSetState(*pset, layer, source_layers.front(),
-                                crtc->id()) != 0) {
-        return -EINVAL;
+  if (args.composition) {
+    std::vector<DrmHwcLayer> &layers = args.composition->layers();
+    std::vector<DrmCompositionPlane> &comp_planes = args.composition
+                                                        ->composition_planes();
+
+    for (DrmCompositionPlane &comp_plane : comp_planes) {
+      DrmPlane *plane = comp_plane.plane();
+      std::vector<size_t> &source_layers = comp_plane.source_layers();
+
+      if (comp_plane.type() != DrmCompositionPlane::Type::kDisable) {
+        if (source_layers.size() > 1) {
+          ALOGE("Can't handle more than one source layer sz=%zu type=%d",
+                source_layers.size(), comp_plane.type());
+          continue;
+        }
+
+        if (source_layers.empty() || source_layers.front() >= layers.size()) {
+          ALOGE("Source layer index %zu out of bounds %zu type=%d",
+                source_layers.front(), layers.size(), comp_plane.type());
+          return -EINVAL;
+        }
+        DrmHwcLayer &layer = layers[source_layers.front()];
+
+        if (plane->AtomicSetState(*pset, layer, source_layers.front(),
+                                  crtc->id()) != 0) {
+          return -EINVAL;
+        }
+      } else {
+        if (plane->AtomicDisablePlane(*pset) != 0) {
+          return -EINVAL;
+        }
       }
-    } else {
-      if (plane->AtomicDisablePlane(*pset) != 0) {
+    }
+  }
+
+  if (args.clear_active_composition && active_kms_data.composition) {
+    auto &comp_planes = active_kms_data.composition->composition_planes();
+    for (auto &comp_plane : comp_planes) {
+      if (comp_plane.plane()->AtomicDisablePlane(*pset) != 0) {
         return -EINVAL;
       }
     }
   }
 
-  if (!ret) {
-    uint32_t flags = DRM_MODE_ATOMIC_ALLOW_MODESET;
-    if (test_only)
-      flags |= DRM_MODE_ATOMIC_TEST_ONLY;
+  uint32_t flags = DRM_MODE_ATOMIC_ALLOW_MODESET;
+  if (args.test_only)
+    flags |= DRM_MODE_ATOMIC_TEST_ONLY;
 
-    ret = drmModeAtomicCommit(drm->fd(), pset.get(), flags, drm);
-    if (ret) {
-      if (!test_only)
-        ALOGE("Failed to commit pset ret=%d\n", ret);
-      return ret;
+  int err = drmModeAtomicCommit(drm->fd(), pset.get(), flags, drm);
+  if (err) {
+    if (!args.test_only)
+      ALOGE("Failed to commit pset ret=%d\n", err);
+    return err;
+  }
+
+  if (!args.test_only) {
+    if (args.display_mode) {
+      connector->set_active_mode(*args.display_mode);
+      active_kms_data.mode_blob = std::move(mode_blob);
+    }
+
+    if (args.clear_active_composition) {
+      active_kms_data.composition.reset();
+    }
+
+    if (args.composition) {
+      active_kms_data.composition = args.composition;
+    }
+
+    if (args.active) {
+      active_kms_data.active_state = *args.active;
+    }
+
+    if (crtc->out_fence_ptr_property()) {
+      args.out_fence = UniqueFd((int)out_fence);
     }
   }
 
-  if (!test_only && mode_.blob) {
-    /* TODO: Add dpms to the pset when the kernel supports it */
-    ret = ApplyDpms(display_comp);
-    if (ret) {
-      ALOGE("Failed to apply DPMS after modeset %d\n", ret);
-      return ret;
-    }
-
-    connector->set_active_mode(mode_.mode);
-    mode_.old_blob = std::move(mode_.blob);
-  }
-
-  if (crtc->out_fence_ptr_property()) {
-    display_comp->out_fence_ = UniqueFd((int)out_fences[crtc->pipe()]);
-  }
-
-  return ret;
-}
-
-int DrmDisplayCompositor::ApplyDpms(DrmDisplayComposition *display_comp) {
-  DrmDevice *drm = resource_manager_->GetDrmDevice(display_);
-  DrmConnector *conn = drm->GetConnectorForDisplay(display_);
-  if (!conn) {
-    ALOGE("Failed to get DrmConnector for display %d", display_);
-    return -ENODEV;
-  }
-
-  const DrmProperty &prop = conn->dpms_property();
-  int ret = drmModeConnectorSetProperty(drm->fd(), conn->id(), prop.id(),
-                                        display_comp->dpms_mode());
-  if (ret) {
-    ALOGE("Failed to set DPMS property for connector %d", conn->id());
-    return ret;
-  }
   return 0;
 }
 
-auto DrmDisplayCompositor::CreateModeBlob(const DrmMode &mode)
-    -> DrmModeUserPropertyBlobUnique {
-  struct drm_mode_modeinfo drm_mode {};
-  mode.ToDrmModeModeInfo(&drm_mode);
+auto DrmDisplayCompositor::ExecuteAtomicCommit(AtomicCommitArgs &args) -> int {
+  int err = CommitFrame(args);
 
-  DrmDevice *drm = resource_manager_->GetDrmDevice(display_);
-  return drm->RegisterUserPropertyBlob(&drm_mode,
-                                       sizeof(struct drm_mode_modeinfo));
-}
-
-void DrmDisplayCompositor::ClearDisplay() {
-  if (!active_composition_)
-    return;
-
-  if (DisablePlanes(active_composition_.get()))
-    return;
-
-  active_composition_.reset(nullptr);
-}
-
-void DrmDisplayCompositor::ApplyFrame(
-    std::unique_ptr<DrmDisplayComposition> composition, int status) {
-  int ret = status;
-
-  if (!ret) {
-    ret = CommitFrame(composition.get(), false);
-  }
-
-  if (ret) {
-    ALOGE("Composite failed for display %d", display_);
-    // Disable the hw used by the last active composition. This allows us to
-    // signal the release fences from that composition to avoid hanging.
-    ClearDisplay();
-    return;
-  }
-
-  active_composition_.swap(composition);
-}
-
-int DrmDisplayCompositor::ApplyComposition(
-    std::unique_ptr<DrmDisplayComposition> composition) {
-  int ret = 0;
-  switch (composition->type()) {
-    case DRM_COMPOSITION_TYPE_FRAME:
-      if (composition->geometry_changed()) {
-        // Send the composition to the kernel to ensure we can commit it. This
-        // is just a test, it won't actually commit the frame.
-        ret = CommitFrame(composition.get(), true);
-        if (ret) {
-          ALOGE("Commit test failed for display %d, FIXME", display_);
-          return ret;
-        }
+  if (!args.test_only) {
+    if (err) {
+      ALOGE("Composite failed for display %d", display_);
+      // Disable the hw used by the last active composition. This allows us to
+      // signal the release fences from that composition to avoid hanging.
+      AtomicCommitArgs cl_args = {.clear_active_composition = true};
+      if (CommitFrame(cl_args)) {
+        ALOGE("Failed to clean-up active composition for display %d", display_);
       }
-
-      ApplyFrame(std::move(composition), ret);
-      break;
-    case DRM_COMPOSITION_TYPE_DPMS:
-      active_ = (composition->dpms_mode() == DRM_MODE_DPMS_ON);
-      ret = ApplyDpms(composition.get());
-      if (ret)
-        ALOGE("Failed to apply dpms for display %d", display_);
-      return ret;
-    case DRM_COMPOSITION_TYPE_MODESET:
-      mode_.mode = composition->display_mode();
-      mode_.blob = CreateModeBlob(mode_.mode);
-      if (!mode_.blob) {
-        ALOGE("Failed to create mode blob for display %d", display_);
-        return -EINVAL;
-      }
-      return 0;
-    default:
-      ALOGE("Unknown composition type %d", composition->type());
-      return -EINVAL;
+      return err;
+    }
   }
 
-  return ret;
-}
-
-int DrmDisplayCompositor::TestComposition(DrmDisplayComposition *composition) {
-  return CommitFrame(composition, true);
-}
+  return err;
+}  // namespace android
 
 }  // namespace android
