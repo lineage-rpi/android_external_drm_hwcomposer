@@ -174,27 +174,22 @@ int DrmConnector::UpdateModes() {
     ALOGI_IF(xres && yres, "force mode to %dx%d@%dHz", xres, yres, rate);
   }
 
-  int fd = drm_->fd();
-
-  drmModeConnectorPtr c = drmModeGetConnector(fd, id_);
+  drmModeConnectorPtr c = drmModeGetConnector(drm_->fd(), id_);
   if (!c) {
     ALOGE("Failed to get connector %d", id_);
     return -ENODEV;
   }
 
-  state_ = c->connection;
-
-  bool preferred_mode_found = false;
-  std::vector<DrmMode> new_modes;
+  modes_.clear();
   for (int i = 0; i < c->count_modes; ++i) {
     bool exists = false;
     for (const DrmMode &mode : modes_) {
       if (mode == c->modes[i]) {
-        new_modes.push_back(mode);
         exists = true;
         break;
       }
     }
+
     if (!exists) {
       DrmMode m(&c->modes[i]);
       if (xres && yres) {
@@ -202,21 +197,11 @@ int DrmConnector::UpdateModes() {
               (rate && uint32_t(m.v_refresh()) != rate))
           continue;
       }
-      m.set_id(drm_->next_mode_id());
-      new_modes.push_back(m);
-      ALOGD("add new mode %dx%d@%.1f id %d for display %d", m.h_display(), m.v_display(), m.v_refresh(), m.id(), display_);
-    }
-    // Use only the first DRM_MODE_TYPE_PREFERRED mode found
-    if (!preferred_mode_found &&
-        (new_modes.back().type() & DRM_MODE_TYPE_PREFERRED)) {
-      preferred_mode_id_ = new_modes.back().id();
-      preferred_mode_found = true;
+      modes_.emplace_back(m);
+      ALOGD("add new mode %dx%d@%.1f for display %d", m.h_display(), m.v_display(), m.v_refresh(), display_);
     }
   }
-  modes_.swap(new_modes);
-  if (!preferred_mode_found && !modes_.empty()) {
-    preferred_mode_id_ = modes_[0].id();
-  }
+
   return 0;
 }
 
