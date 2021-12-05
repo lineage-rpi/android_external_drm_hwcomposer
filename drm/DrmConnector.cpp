@@ -192,13 +192,17 @@ int DrmConnector::UpdateModes() {
 
     if (!exists) {
       DrmMode m(&c->modes[i]);
+      ALOGD("supported mode %dx%d@%f for display %d", m.h_display(), m.v_display(), m.v_refresh(), display_);
       if (xres && yres) {
+        if (!rate && m.h_display() == xres && m.v_display() == yres) {
+          rate = uint32_t(m.v_refresh());
+        }
         if (m.h_display() != xres || m.v_display() != yres ||
-              (rate && uint32_t(m.v_refresh()) != rate))
+              uint32_t(m.v_refresh()) != rate)
           continue;
       }
       modes_.emplace_back(m);
-      ALOGD("add new mode %dx%d@%.1f for display %d", m.h_display(), m.v_display(), m.v_refresh(), display_);
+      ALOGD("add new mode %dx%d@%.0f for display %d", m.h_display(), m.v_display(), m.v_refresh(), display_);
     }
   }
 
