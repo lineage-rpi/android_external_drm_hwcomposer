@@ -495,6 +495,7 @@ HWC2::Error DrmHwcTwo::HwcDisplay::GetDisplayAttribute(hwc2_config_t config,
   return HWC2::Error::None;
 }
 
+// NOLINTNEXTLINE (readability-function-cognitive-complexity): Fixme
 HWC2::Error DrmHwcTwo::HwcDisplay::GetDisplayConfigs(uint32_t *num_configs,
                                                      hwc2_config_t *configs) {
   supported(__func__);
@@ -787,16 +788,6 @@ HWC2::Error DrmHwcTwo::HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
   if (ret) {
     ALOGV("Failed to plan the composition ret=%d", ret);
     return HWC2::Error::BadConfig;
-  }
-
-  // Disable the planes we're not using
-  for (auto i = primary_planes.begin(); i != primary_planes.end();) {
-    composition->AddPlaneDisable(*i);
-    i = primary_planes.erase(i);
-  }
-  for (auto i = overlay_planes.begin(); i != overlay_planes.end();) {
-    composition->AddPlaneDisable(*i);
-    i = overlay_planes.erase(i);
   }
 
   a_args.composition = composition;

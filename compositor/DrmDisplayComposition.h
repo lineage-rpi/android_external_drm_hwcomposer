@@ -32,45 +32,28 @@ namespace android {
 class Importer;
 class Planner;
 
+constexpr size_t kUndefinedSourceLayer = UINT16_MAX;
+
 class DrmCompositionPlane {
  public:
-  enum class Type : int32_t {
-    kDisable,
-    kLayer,
-  };
-
   DrmCompositionPlane() = default;
   DrmCompositionPlane(DrmCompositionPlane &&rhs) = default;
   DrmCompositionPlane &operator=(DrmCompositionPlane &&other) = default;
-  DrmCompositionPlane(Type type, DrmPlane *plane) : type_(type), plane_(plane) {
-  }
-  DrmCompositionPlane(Type type, DrmPlane *plane, size_t source_layer)
-      : type_(type), plane_(plane), source_layers_(1, source_layer) {
-  }
-
-  Type type() const {
-    return type_;
+  DrmCompositionPlane(DrmPlane *plane, size_t source_layer)
+      : plane_(plane), source_layer_(source_layer) {
   }
 
   DrmPlane *plane() const {
     return plane_;
   }
-  void set_plane(DrmPlane *plane) {
-    plane_ = plane;
-  }
 
-  std::vector<size_t> &source_layers() {
-    return source_layers_;
-  }
-
-  const std::vector<size_t> &source_layers() const {
-    return source_layers_;
+  size_t source_layer() const {
+    return source_layer_;
   }
 
  private:
-  Type type_ = Type::kDisable;
   DrmPlane *plane_ = NULL;
-  std::vector<size_t> source_layers_;
+  size_t source_layer_ = kUndefinedSourceLayer;
 };
 
 class DrmDisplayComposition {
@@ -81,7 +64,6 @@ class DrmDisplayComposition {
 
   int SetLayers(DrmHwcLayer *layers, size_t num_layers);
   int AddPlaneComposition(DrmCompositionPlane plane);
-  int AddPlaneDisable(DrmPlane *plane);
 
   int Plan(std::vector<DrmPlane *> *primary_planes,
            std::vector<DrmPlane *> *overlay_planes);

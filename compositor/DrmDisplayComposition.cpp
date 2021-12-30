@@ -45,11 +45,6 @@ int DrmDisplayComposition::SetLayers(DrmHwcLayer *layers, size_t num_layers) {
   return 0;
 }
 
-int DrmDisplayComposition::AddPlaneDisable(DrmPlane *plane) {
-  composition_planes_.emplace_back(DrmCompositionPlane::Type::kDisable, plane);
-  return 0;
-}
-
 int DrmDisplayComposition::AddPlaneComposition(DrmCompositionPlane plane) {
   composition_planes_.emplace_back(std::move(plane));
   return 0;
@@ -77,9 +72,6 @@ int DrmDisplayComposition::Plan(std::vector<DrmPlane *> *primary_planes,
   for (auto &i : composition_planes_) {
     if (!i.plane())
       continue;
-
-    // make sure that source layers are ordered based on zorder
-    std::sort(i.source_layers().begin(), i.source_layers().end());
 
     std::vector<DrmPlane *> *container = nullptr;
     if (i.plane()->type() == DRM_PLANE_TYPE_PRIMARY)
