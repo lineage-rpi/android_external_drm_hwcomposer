@@ -33,6 +33,7 @@ DrmPlane::DrmPlane(DrmDevice *drm, drmModePlanePtr p)
     : drm_(drm),
       id_(p->plane_id),
       possible_crtc_mask_(p->possible_crtcs),
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
       formats_(p->formats, p->formats + p->count_formats) {
 }
 
@@ -46,7 +47,7 @@ int DrmPlane::Init() {
   int ret = 0;
   uint64_t type = 0;
   std::tie(ret, type) = p.value();
-  if (ret) {
+  if (ret != 0) {
     ALOGE("Failed to get plane type property value");
     return ret;
   }
@@ -133,10 +134,6 @@ int DrmPlane::Init() {
   return 0;
 }
 
-uint32_t DrmPlane::id() const {
-  return id_;
-}
-
 bool DrmPlane::GetCrtcSupported(const DrmCrtc &crtc) const {
   return ((1 << crtc.pipe()) & possible_crtc_mask_) != 0;
 }
@@ -154,7 +151,7 @@ bool DrmPlane::IsValidForLayer(DrmHwcLayer *layer) {
     }
   }
 
-  if (alpha_property_.id() == 0 && layer->alpha != 0xffff) {
+  if (alpha_property_.id() == 0 && layer->alpha != UINT16_MAX) {
     ALOGV("Alpha is not supported on plane %d", id_);
     return false;
   }
@@ -176,7 +173,7 @@ bool DrmPlane::IsValidForLayer(DrmHwcLayer *layer) {
   return true;
 }
 
-uint32_t DrmPlane::type() const {
+uint32_t DrmPlane::GetType() const {
   return type_;
 }
 
@@ -194,15 +191,15 @@ bool DrmPlane::HasNonRgbFormat() const {
 
 static uint64_t ToDrmRotation(DrmHwcTransform transform) {
   uint64_t rotation = 0;
-  if (transform & DrmHwcTransform::kFlipH)
+  if ((transform & DrmHwcTransform::kFlipH) != 0)
     rotation |= DRM_MODE_REFLECT_X;
-  if (transform & DrmHwcTransform::kFlipV)
+  if ((transform & DrmHwcTransform::kFlipV) != 0)
     rotation |= DRM_MODE_REFLECT_Y;
-  if (transform & DrmHwcTransform::kRotate90)
+  if ((transform & DrmHwcTransform::kRotate90) != 0)
     rotation |= DRM_MODE_ROTATE_90;
-  else if (transform & DrmHwcTransform::kRotate180)
+  else if ((transform & DrmHwcTransform::kRotate180) != 0)
     rotation |= DRM_MODE_ROTATE_180;
-  else if (transform & DrmHwcTransform::kRotate270)
+  else if ((transform & DrmHwcTransform::kRotate270) != 0)
     rotation |= DRM_MODE_ROTATE_270;
   else
     rotation |= DRM_MODE_ROTATE_0;
@@ -210,9 +207,15 @@ static uint64_t ToDrmRotation(DrmHwcTransform transform) {
   return rotation;
 }
 
+/* Convert float to 16.16 fixed point */
+static int To1616FixPt(float in) {
+  constexpr int kBitShift = 16;
+  return int(in * (1 << kBitShift));
+}
+
 auto DrmPlane::AtomicSetState(drmModeAtomicReq &pset, DrmHwcLayer &layer,
                               uint32_t zpos, uint32_t crtc_id) -> int {
-  if (!layer.FbIdHandle) {
+  if (!layer.fb_id_handle) {
     ALOGE("Expected a valid framebuffer for pset");
     return -EINVAL;
   }
@@ -234,21 +237,19 @@ auto DrmPlane::AtomicSetState(drmModeAtomicReq &pset, DrmHwcLayer &layer,
   }
 
   if (!crtc_property_.AtomicSet(pset, crtc_id) ||
-      !fb_property_.AtomicSet(pset, layer.FbIdHandle->GetFbId()) ||
+      !fb_property_.AtomicSet(pset, layer.fb_id_handle->GetFbId()) ||
       !crtc_x_property_.AtomicSet(pset, layer.display_frame.left) ||
       !crtc_y_property_.AtomicSet(pset, layer.display_frame.top) ||
       !crtc_w_property_.AtomicSet(pset, layer.display_frame.right -
                                             layer.display_frame.left) ||
       !crtc_h_property_.AtomicSet(pset, layer.display_frame.bottom -
                                             layer.display_frame.top) ||
-      !src_x_property_.AtomicSet(pset, (int)(layer.source_crop.left) << 16) ||
-      !src_y_property_.AtomicSet(pset, (int)(layer.source_crop.top) << 16) ||
-      !src_w_property_.AtomicSet(pset, (int)(layer.source_crop.right -
-                                             layer.source_crop.left)
-                                           << 16) ||
-      !src_h_property_.AtomicSet(pset, (int)(layer.source_crop.bottom -
-                                             layer.source_crop.top)
-                                           << 16)) {
+      !src_x_property_.AtomicSet(pset, To1616FixPt(layer.source_crop.left)) ||
+      !src_y_property_.AtomicSet(pset, To1616FixPt(layer.source_crop.top)) ||
+      !src_w_property_.AtomicSet(pset, To1616FixPt(layer.source_crop.right -
+                                                   layer.source_crop.left)) ||
+      !src_h_property_.AtomicSet(pset, To1616FixPt(layer.source_crop.bottom -
+                                                   layer.source_crop.top))) {
     return -EINVAL;
   }
 
@@ -289,7 +290,7 @@ auto DrmPlane::AtomicDisablePlane(drmModeAtomicReq &pset) -> int {
   return 0;
 }
 
-const DrmProperty &DrmPlane::zpos_property() const {
+const DrmProperty &DrmPlane::GetZPosProperty() const {
   return zpos_property_;
 }
 

@@ -49,7 +49,6 @@ auto DrmDisplayCompositor::Init(ResourceManager *resource_manager, int display)
     ALOGE("Could not find drmdevice for display");
     return -EINVAL;
   }
-  planner_ = Planner::CreateInstance(drm);
 
   initialized_ = true;
   return 0;
@@ -64,14 +63,14 @@ DrmDisplayCompositor::CreateInitializedComposition() const {
     return std::unique_ptr<DrmDisplayComposition>();
   }
 
-  return std::make_unique<DrmDisplayComposition>(crtc, planner_.get());
+  return std::make_unique<DrmDisplayComposition>(crtc);
 }
 
 // NOLINTNEXTLINE (readability-function-cognitive-complexity): Fixme
 auto DrmDisplayCompositor::CommitFrame(AtomicCommitArgs &args) -> int {
   ATRACE_CALL();
 
-  if (args.active && *args.active == active_frame_state.crtc_active_state) {
+  if (args.active && *args.active == active_frame_state_.crtc_active_state) {
     /* Don't set the same state twice */
     args.active.reset();
   }
@@ -81,7 +80,7 @@ auto DrmDisplayCompositor::CommitFrame(AtomicCommitArgs &args) -> int {
     return 0;
   }
 
-  if (!active_frame_state.crtc_active_state) {
+  if (!active_frame_state_.crtc_active_state) {
     /* Force activate display */
     args.active = true;
   }
@@ -161,7 +160,7 @@ auto DrmDisplayCompositor::CommitFrame(AtomicCommitArgs &args) -> int {
       }
       DrmHwcLayer &layer = layers[source_layer];
 
-      new_frame_state.used_framebuffers.emplace_back(layer.FbIdHandle);
+      new_frame_state.used_framebuffers.emplace_back(layer.fb_id_handle);
       new_frame_state.used_planes.emplace_back(plane);
 
       /* Remove from 'unused' list, since plane is re-used */
@@ -205,7 +204,7 @@ auto DrmDisplayCompositor::CommitFrame(AtomicCommitArgs &args) -> int {
       connector->set_active_mode(*args.display_mode);
     }
 
-    active_frame_state = std::move(new_frame_state);
+    active_frame_state_ = std::move(new_frame_state);
 
     if (crtc->out_fence_ptr_property()) {
       args.out_fence = UniqueFd((int)out_fence);

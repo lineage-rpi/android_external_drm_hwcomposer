@@ -31,8 +31,7 @@ namespace android {
 
 class BufferInfoGetter {
  public:
-  virtual ~BufferInfoGetter() {
-  }
+  virtual ~BufferInfoGetter() = default;
 
   virtual int ConvertBoInfo(buffer_handle_t handle, hwc_drm_bo_t *bo) = 0;
 
@@ -53,17 +52,18 @@ class LegacyBufferInfoGetter : public BufferInfoGetter {
     return 0;
   }
 
-  int ConvertBoInfo(buffer_handle_t handle, hwc_drm_bo_t *bo) override = 0;
-
   static std::unique_ptr<LegacyBufferInfoGetter> CreateInstance();
 
   static uint32_t ConvertHalFormatToDrm(uint32_t hal_format);
+
+  // NOLINTNEXTLINE:(readability-identifier-naming)
   const gralloc_module_t *gralloc_;
 };
 
 #ifdef DISABLE_LEGACY_GETTERS
 #define LEGACY_BUFFER_INFO_GETTER(getter_)
 #else
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define LEGACY_BUFFER_INFO_GETTER(getter_)                             \
   std::unique_ptr<LegacyBufferInfoGetter>                              \
   LegacyBufferInfoGetter::CreateInstance() {                           \

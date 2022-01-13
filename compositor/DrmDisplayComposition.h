@@ -30,7 +30,6 @@
 namespace android {
 
 class Importer;
-class Planner;
 
 constexpr size_t kUndefinedSourceLayer = UINT16_MAX;
 
@@ -52,14 +51,14 @@ class DrmCompositionPlane {
   }
 
  private:
-  DrmPlane *plane_ = NULL;
+  DrmPlane *plane_ = nullptr;
   size_t source_layer_ = kUndefinedSourceLayer;
 };
 
 class DrmDisplayComposition {
  public:
   DrmDisplayComposition(const DrmDisplayComposition &) = delete;
-  DrmDisplayComposition(DrmCrtc *crtc, Planner *planner);
+  explicit DrmDisplayComposition(DrmCrtc *crtc);
   ~DrmDisplayComposition() = default;
 
   int SetLayers(DrmHwcLayer *layers, size_t num_layers);
@@ -80,13 +79,8 @@ class DrmDisplayComposition {
     return crtc_;
   }
 
-  Planner *planner() const {
-    return planner_;
-  }
-
  private:
-  DrmCrtc *crtc_ = NULL;
-  Planner *planner_ = NULL;
+  DrmCrtc *crtc_ = nullptr;
 
   std::vector<DrmHwcLayer> layers_;
   std::vector<DrmCompositionPlane> composition_planes_;

@@ -17,9 +17,9 @@
 #ifndef ANDROID_DRM_PLANE_H_
 #define ANDROID_DRM_PLANE_H_
 
-#include <stdint.h>
 #include <xf86drmMode.h>
 
+#include <cstdint>
 #include <vector>
 
 #include "DrmCrtc.h"
@@ -29,6 +29,7 @@
 namespace android {
 
 class DrmDevice;
+struct DrmHwcLayer;
 
 class DrmPlane {
  public:
@@ -38,12 +39,10 @@ class DrmPlane {
 
   int Init();
 
-  uint32_t id() const;
-
   bool GetCrtcSupported(const DrmCrtc &crtc) const;
   bool IsValidForLayer(DrmHwcLayer *layer);
 
-  uint32_t type() const;
+  uint32_t GetType() const;
 
   bool IsFormatSupported(uint32_t format) const;
   bool HasNonRgbFormat() const;
@@ -51,7 +50,7 @@ class DrmPlane {
   auto AtomicSetState(drmModeAtomicReq &pset, DrmHwcLayer &layer, uint32_t zpos,
                       uint32_t crtc_id) -> int;
   auto AtomicDisablePlane(drmModeAtomicReq &pset) -> int;
-  const DrmProperty &zpos_property() const;
+  const DrmProperty &GetZPosProperty() const;
 
  private:
   DrmDevice *drm_;

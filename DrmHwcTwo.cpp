@@ -79,7 +79,7 @@ HWC2::Error DrmHwcTwo::Init() {
   }
 
   HWC2::Error ret = HWC2::Error::None;
-  for (int i = 0; i < resource_manager_.getDisplayCount(); i++) {
+  for (int i = 0; i < resource_manager_.GetDisplayCount(); i++) {
     ret = CreateDisplay(i, HWC2::DisplayType::Physical);
     if (ret != HWC2::Error::None) {
       ALOGE("Failed to create display %d with error %d", i, ret);
@@ -192,7 +192,7 @@ HWC2::Error DrmHwcTwo::RegisterCallback(int32_t descriptor,
     case HWC2::Callback::Hotplug: {
       hotplug_callback_ = std::make_pair(HWC2_PFN_HOTPLUG(function), data);
       lock.unlock();
-      const auto &drm_devices = resource_manager_.getDrmDevices();
+      const auto &drm_devices = resource_manager_.GetDrmDevices();
       for (const auto &device : drm_devices)
         HandleInitialHotplugState(device.get());
       break;
@@ -240,12 +240,6 @@ void DrmHwcTwo::HwcDisplay::ClearDisplay() {
 }
 
 HWC2::Error DrmHwcTwo::HwcDisplay::Init(std::vector<DrmPlane *> *planes) {
-  planner_ = Planner::CreateInstance(drm_);
-  if (!planner_) {
-    ALOGE("Failed to create planner instance for composition");
-    return HWC2::Error::NoResources;
-  }
-
   int display = static_cast<int>(handle_);
   int ret = compositor_.Init(resource_manager_, display);
   if (ret) {
@@ -260,9 +254,9 @@ HWC2::Error DrmHwcTwo::HwcDisplay::Init(std::vector<DrmPlane *> *planes) {
                "1");
   bool use_overlay_planes = strtol(use_overlay_planes_prop, nullptr, 10);
   for (auto &plane : *planes) {
-    if (plane->type() == DRM_PLANE_TYPE_PRIMARY)
+    if (plane->GetType() == DRM_PLANE_TYPE_PRIMARY)
       primary_planes_.push_back(plane);
-    else if (use_overlay_planes && (plane)->type() == DRM_PLANE_TYPE_OVERLAY)
+    else if (use_overlay_planes && (plane)->GetType() == DRM_PLANE_TYPE_OVERLAY)
       overlay_planes_.push_back(plane);
   }
 
@@ -737,8 +731,7 @@ HWC2::Error DrmHwcTwo::HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
     composition_layers.emplace_back(std::move(layer));
   }
 
-  auto composition = std::make_shared<DrmDisplayComposition>(crtc_,
-                                                             planner_.get());
+  auto composition = std::make_shared<DrmDisplayComposition>(crtc_);
 
   // TODO(nobody): Don't always assume geometry changed
   int ret = composition->SetLayers(composition_layers.data(),
@@ -840,7 +833,7 @@ HWC2::Error DrmHwcTwo::HwcDisplay::SetClientTarget(buffer_handle_t target,
 
   /* TODO: Do not update source_crop every call.
    * It makes sense to do it once after every hotplug event. */
-  hwc_drm_bo bo{};
+  HwcDrmBo bo{};
   BufferInfoGetter::GetInstance()->ConvertBoInfo(target, &bo);
 
   hwc_frect_t source_crop = {.left = 0.0F,
@@ -1083,6 +1076,14 @@ HWC2::Error DrmHwcTwo::HwcDisplay::SetColorModeWithIntent(int32_t mode,
 
 #endif /* PLATFORM_SDK_VERSION > 27 */
 
+const Backend *DrmHwcTwo::HwcDisplay::backend() const {
+  return backend_.get();
+}
+
+void DrmHwcTwo::HwcDisplay::set_backend(std::unique_ptr<Backend> backend) {
+  backend_ = std::move(backend);
+}
+
 HWC2::Error DrmHwcTwo::HwcLayer::SetCursorPosition(int32_t /*x*/,
                                                    int32_t /*y*/) {
   return HWC2::Error::None;
@@ -1227,7 +1228,7 @@ void DrmHwcTwo::HwcLayer::PopulateDrmLayer(DrmHwcLayer *layer) {
   // TODO(rsglobal): Avoid extra fd duplication
   layer->acquire_fence = UniqueFd(fcntl(acquire_fence_.Get(), F_DUPFD_CLOEXEC));
   layer->display_frame = display_frame_;
-  layer->alpha = lround(65535.0F * alpha_);
+  layer->alpha = std::lround(65535.0F * alpha_);
   layer->blending = blending_;
   layer->source_crop = source_crop_;
   layer->transform = transform_;
@@ -1260,7 +1261,7 @@ void DrmHwcTwo::HandleInitialHotplugState(DrmDevice *drmDevice) {
 }
 
 void DrmHwcTwo::HandleHotplugUEvent() {
-  for (const auto &drm : resource_manager_.getDrmDevices()) {
+  for (const auto &drm : resource_manager_.GetDrmDevices()) {
     for (const auto &conn : drm->connectors()) {
       drmModeConnection old_state = conn->state();
       drmModeConnection cur_state = conn->UpdateModes()
@@ -1289,7 +1290,10 @@ void DrmHwcTwo::HandleHotplugUEvent() {
 }
 
 // static
-int DrmHwcTwo::HookDevClose(hw_device_t * /*dev*/) {
+int DrmHwcTwo::HookDevClose(hw_device_t *dev) {
+  // NOLINTNEXTLINE (cppcoreguidelines-pro-type-reinterpret-cast): Safe
+  auto *hwc2_dev = reinterpret_cast<hwc2_device_t *>(dev);
+  std::unique_ptr<DrmHwcTwo> ctx(toDrmHwcTwo(hwc2_dev));
   return 0;
 }
 
@@ -1580,8 +1584,8 @@ int DrmHwcTwo::HookDevOpen(const struct hw_module_t *module, const char *name,
   }
 
   ctx->common.module = (hw_module_t *)module;
-  *dev = &ctx->common;
-  ctx.release();  // NOLINT(bugprone-unused-return-value)
+  *dev = &ctx.release()->common;
+
   return 0;
 }
 }  // namespace android

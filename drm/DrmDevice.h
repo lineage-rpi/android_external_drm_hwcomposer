@@ -17,8 +17,7 @@
 #ifndef ANDROID_DRM_H_
 #define ANDROID_DRM_H_
 
-#include <stdint.h>
-
+#include <cstdint>
 #include <map>
 #include <tuple>
 
@@ -26,7 +25,6 @@
 #include "DrmCrtc.h"
 #include "DrmEncoder.h"
 #include "DrmFbImporter.h"
-#include "DrmPlane.h"
 #include "utils/UniqueFd.h"
 
 namespace android {
@@ -65,7 +63,6 @@ class DrmDevice {
   DrmConnector *GetWritebackConnectorForDisplay(int display) const;
   DrmConnector *AvailableWritebackConnector(int display) const;
   DrmCrtc *GetCrtcForDisplay(int display) const;
-  DrmPlane *GetPlane(uint32_t id) const;
 
   int GetCrtcProperty(const DrmCrtc &crtc, const char *prop_name,
                       DrmProperty *property) const;
@@ -87,7 +84,7 @@ class DrmDevice {
   }
 
   DrmFbImporter &GetDrmFbImporter() {
-    return *mDrmFbImporter.get();
+    return *mDrmFbImporter;
   }
 
   static auto IsKMSDev(const char *path) -> bool;
