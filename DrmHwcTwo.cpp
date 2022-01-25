@@ -1240,11 +1240,7 @@ void DrmHwcTwo::HandleDisplayHotplug(hwc2_display_t displayid, int state) {
   const std::lock_guard<std::mutex> lock(callback_lock_);
 
   if (hotplug_callback_.first != nullptr &&
-      hotplug_callback_.second != nullptr
-#if PLATFORM_SDK_VERSION >= 31
-      && state == DRM_MODE_CONNECTED
-#endif
-      ) {
+      hotplug_callback_.second != nullptr) {
     hotplug_callback_.first(hotplug_callback_.second, displayid,
                             state == DRM_MODE_CONNECTED
                                 ? HWC2_CONNECTION_CONNECTED
