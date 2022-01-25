@@ -35,7 +35,6 @@
 #include "drm/DrmDevice.h"
 #include "drm/DrmPlane.h"
 #include "drm/DrmUnique.h"
-#include "utils/autolock.h"
 #include "utils/log.h"
 
 namespace android {
@@ -52,18 +51,6 @@ auto DrmDisplayCompositor::Init(ResourceManager *resource_manager, int display)
 
   initialized_ = true;
   return 0;
-}
-
-std::unique_ptr<DrmDisplayComposition>
-DrmDisplayCompositor::CreateInitializedComposition() const {
-  DrmDevice *drm = resource_manager_->GetDrmDevice(display_);
-  DrmCrtc *crtc = drm->GetCrtcForDisplay(display_);
-  if (!crtc) {
-    ALOGE("Failed to find crtc for display = %d", display_);
-    return std::unique_ptr<DrmDisplayComposition>();
-  }
-
-  return std::make_unique<DrmDisplayComposition>(crtc);
 }
 
 // NOLINTNEXTLINE (readability-function-cognitive-complexity): Fixme
@@ -232,5 +219,21 @@ auto DrmDisplayCompositor::ExecuteAtomicCommit(AtomicCommitArgs &args) -> int {
 
   return err;
 }  // namespace android
+
+auto DrmDisplayCompositor::ActivateDisplayUsingDPMS() -> int {
+  auto *drm = resource_manager_->GetDrmDevice(display_);
+  auto *connector = drm->GetConnectorForDisplay(display_);
+  if (connector == nullptr) {
+    ALOGE("Could not locate connector for display %d", display_);
+    return -ENODEV;
+  }
+
+  if (connector->dpms_property()) {
+    drmModeConnectorSetProperty(drm->fd(), connector->id(),
+                                connector->dpms_property().id(),
+                                DRM_MODE_DPMS_ON);
+  }
+  return 0;
+}
 
 }  // namespace android

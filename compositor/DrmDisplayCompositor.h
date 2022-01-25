@@ -58,11 +58,11 @@ class DrmDisplayCompositor {
   ~DrmDisplayCompositor() = default;
   auto Init(ResourceManager *resource_manager, int display) -> int;
 
-  std::unique_ptr<DrmDisplayComposition> CreateInitializedComposition() const;
-
   auto ExecuteAtomicCommit(AtomicCommitArgs &args) -> int;
 
   DrmDisplayCompositor(const DrmDisplayCompositor &) = delete;
+
+  auto ActivateDisplayUsingDPMS() -> int;
 
  private:
   auto CommitFrame(AtomicCommitArgs &args) -> int;
