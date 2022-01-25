@@ -23,10 +23,10 @@
 #include "drm/DrmConnector.h"
 #include "utils/log.h"
 
-constexpr uint32_t kHeadlessModeDisplayWidthMm = 163;
-constexpr uint32_t kHeadlessModeDisplayHeightMm = 122;
-constexpr uint32_t kHeadlessModeDisplayWidthPx = 1024;
-constexpr uint32_t kHeadlessModeDisplayHeightPx = 768;
+constexpr uint32_t kHeadlessModeDisplayWidthMm = 1600;
+constexpr uint32_t kHeadlessModeDisplayHeightMm = 900;
+constexpr uint32_t kHeadlessModeDisplayWidthPx = 1920;
+constexpr uint32_t kHeadlessModeDisplayHeightPx = 1080;
 constexpr uint32_t kHeadlessModeDisplayVRefresh = 60;
 
 namespace android {
