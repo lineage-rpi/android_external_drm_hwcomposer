@@ -23,11 +23,7 @@
 #include "drm/DrmConnector.h"
 #include "utils/log.h"
 
-constexpr uint32_t kHeadlessModeDisplayWidthMm = 1600;
-constexpr uint32_t kHeadlessModeDisplayHeightMm = 900;
-constexpr uint32_t kHeadlessModeDisplayWidthPx = 1920;
-constexpr uint32_t kHeadlessModeDisplayHeightPx = 1080;
-constexpr uint32_t kHeadlessModeDisplayVRefresh = 60;
+#include <cutils/properties.h>
 
 namespace android {
 
@@ -35,6 +31,23 @@ namespace android {
 int HwcDisplayConfigs::last_config_id = 1;
 
 void HwcDisplayConfigs::FillHeadless() {
+  char value[PROPERTY_VALUE_MAX];
+  uint32_t xres = 0, yres = 0;
+  if (property_get("debug.drm.mode.force", value, NULL)) {
+    // parse <xres>x<yres>[@<refreshrate>]
+    if (sscanf(value, "%dx%d", &xres, &yres) != 2) {
+      xres = yres = 0;
+    }
+  }
+
+  const uint16_t kHeadlessModeDisplayWidthMm = xres ? xres : 1600;
+  const uint16_t kHeadlessModeDisplayHeightMm = yres ? yres : 900;
+  const uint16_t kHeadlessModeDisplayWidthPx = xres ? xres : 1920;
+  const uint16_t kHeadlessModeDisplayHeightPx = yres ? yres : 1080;
+  const uint16_t kHeadlessModeDisplayVRefresh = 60;
+  ALOGI("set mode %dx%d@%dHz for HEADLESS-MODE", kHeadlessModeDisplayWidthPx,
+        kHeadlessModeDisplayHeightPx, kHeadlessModeDisplayVRefresh);
+
   hwc_configs.clear();
 
   last_config_id++;
