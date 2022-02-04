@@ -24,11 +24,10 @@
 
 namespace android {
 
-class DrmHwcTwo {
+class DrmHwcTwo : public PipelineToFrontendBindingInterface {
  public:
   DrmHwcTwo();
-
-  HWC2::Error Init();
+  ~DrmHwcTwo() override = default;
 
   std::pair<HWC2_PFN_HOTPLUG, hwc2_callback_data_t> hotplug_callback_{};
   std::pair<HWC2_PFN_VSYNC, hwc2_callback_data_t> vsync_callback_{};
@@ -36,14 +35,6 @@ class DrmHwcTwo {
   std::pair<HWC2_PFN_VSYNC_2_4, hwc2_callback_data_t> vsync_2_4_callback_{};
 #endif
   std::pair<HWC2_PFN_REFRESH, hwc2_callback_data_t> refresh_callback_{};
-
-  static HwcDisplay *GetDisplay(DrmHwcTwo *hwc, hwc2_display_t display_handle) {
-    auto it = hwc->displays_.find(display_handle);
-    if (it == hwc->displays_.end())
-      return nullptr;
-
-    return &it->second;
-  }
 
   // Device functions
   HWC2::Error CreateVirtualDisplay(uint32_t width, uint32_t height,
@@ -53,22 +44,38 @@ class DrmHwcTwo {
   uint32_t GetMaxVirtualDisplayCount();
   HWC2::Error RegisterCallback(int32_t descriptor, hwc2_callback_data_t data,
                                hwc2_function_pointer_t function);
-  HWC2::Error CreateDisplay(hwc2_display_t displ, HWC2::DisplayType type);
+
+  auto GetDisplay(hwc2_display_t display_handle) {
+    return displays_.count(display_handle) != 0
+               ? displays_[display_handle].get()
+               : nullptr;
+  }
 
   auto &GetResMan() {
     return resource_manager_;
   }
 
- private:
-  void HandleDisplayHotplug(hwc2_display_t displayid, int state);
-  void HandleInitialHotplugState(DrmDevice *drmDevice);
+  void ScheduleHotplugEvent(hwc2_display_t displayid, bool connected) {
+    deferred_hotplug_events_[displayid] = connected;
+  }
 
-  void HandleHotplugUEvent();
+  // PipelineToFrontendBindingInterface
+  bool BindDisplay(DrmDisplayPipeline *pipeline) override;
+  bool UnbindDisplay(DrmDisplayPipeline *pipeline) override;
+  void FinalizeDisplayBinding() override;
+
+ private:
+  void SendHotplugEventToClient(hwc2_display_t displayid, bool connected);
 
   ResourceManager resource_manager_;
-  std::map<hwc2_display_t, HwcDisplay> displays_;
+  std::map<hwc2_display_t, std::unique_ptr<HwcDisplay>> displays_;
+  std::map<DrmDisplayPipeline *, hwc2_display_t> display_handles_;
 
   std::string mDumpString;
+
+  std::map<hwc2_display_t, bool> deferred_hotplug_events_;
+
+  uint32_t last_display_handle_ = kPrimaryDisplay;
 };
 }  // namespace android
 

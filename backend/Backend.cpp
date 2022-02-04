@@ -86,7 +86,7 @@ bool Backend::IsClientLayer(HwcDisplay *display, HwcLayer *layer) {
          !BufferInfoGetter::GetInstance()->IsHandleUsable(layer->GetBuffer()) ||
          display->color_transform_hint() != HAL_COLOR_TRANSFORM_IDENTITY ||
          (layer->RequireScalingOrPhasing() &&
-          display->resource_manager()->ForcedScalingWithGpu());
+          display->GetHwc2()->GetResMan().ForcedScalingWithGpu());
 }
 
 bool Backend::HardwareSupportsLayerType(HWC2::Composition comp_type) {
@@ -119,8 +119,8 @@ void Backend::MarkValidated(std::vector<HwcLayer *> &layers,
 std::tuple<int, int> Backend::GetExtraClientRange(
     HwcDisplay *display, const std::vector<HwcLayer *> &layers,
     int client_start, size_t client_size) {
-  size_t avail_planes = display->primary_planes().size() +
-                        display->overlay_planes().size();
+  size_t avail_planes = 1 /* primary planes count*/ +
+                        display->GetPipe().overlay_planes.size();
 
   /*
    * If more layers then planes, save one plane

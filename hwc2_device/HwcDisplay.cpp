@@ -27,6 +27,9 @@
 
 namespace android {
 
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+uint32_t HwcDisplay::layer_idx_ = 2; /* Start from 2. See destroyLayer() */
+
 std::string HwcDisplay::DumpDelta(HwcDisplay::Stats delta) {
   if (delta.total_pixops_ == 0)
     return "No stats yet";
@@ -68,8 +71,12 @@ std::string HwcDisplay::Dump() {
                              " VSync remains";
   }
 
+  std::string connector_name = IsInHeadlessMode()
+                                   ? "NULL-DISPLAY"
+                                   : GetPipe().connector->Get()->GetName();
+
   std::stringstream ss;
-  ss << "- Display on: " << connector_->name() << "\n"
+  ss << "- Display on: " << connector_name << "\n"
      << "  Flattening state: " << flattening_state_str << "\n"
      << "Statistics since system boot:\n"
      << DumpDelta(total_stats_) << "\n\n"
@@ -80,12 +87,10 @@ std::string HwcDisplay::Dump() {
   return ss.str();
 }
 
-HwcDisplay::HwcDisplay(ResourceManager *resource_manager, DrmDevice *drm,
-                       hwc2_display_t handle, HWC2::DisplayType type,
-                       DrmHwcTwo *hwc2)
+HwcDisplay::HwcDisplay(DrmDisplayPipeline *pipeline, hwc2_display_t handle,
+                       HWC2::DisplayType type, DrmHwcTwo *hwc2)
     : hwc2_(hwc2),
-      resource_manager_(resource_manager),
-      drm_(drm),
+      pipeline_(pipeline),
       handle_(handle),
       type_(type),
       color_transform_hint_(HAL_COLOR_TRANSFORM_IDENTITY) {
@@ -95,6 +100,26 @@ HwcDisplay::HwcDisplay(ResourceManager *resource_manager, DrmDevice *drm,
                              0.0, 0.0, 1.0, 0.0,
                              0.0, 0.0, 0.0, 1.0};
   // clang-format on
+
+  ChosePreferredConfig();
+  Init();
+
+  hwc2_->ScheduleHotplugEvent(handle_, /*connected = */ true);
+}
+
+HwcDisplay::~HwcDisplay() {
+  if (handle_ != kPrimaryDisplay) {
+    hwc2_->ScheduleHotplugEvent(handle_, /*connected = */ false);
+  }
+
+  auto &main_lock = hwc2_->GetResMan().GetMainLock();
+  /* Unlock to allow pending vsync callbacks to finish */
+  main_lock.unlock();
+  flattening_vsync_worker_.VSyncControl(false);
+  flattening_vsync_worker_.Exit();
+  vsync_worker_.VSyncControl(false);
+  vsync_worker_.Exit();
+  main_lock.lock();
 }
 
 void HwcDisplay::ClearDisplay() {
@@ -104,43 +129,11 @@ void HwcDisplay::ClearDisplay() {
   }
 
   AtomicCommitArgs a_args = {.clear_active_composition = true};
-  compositor_.ExecuteAtomicCommit(a_args);
+  pipeline_->compositor->ExecuteAtomicCommit(a_args);
 }
 
-HWC2::Error HwcDisplay::Init(std::vector<DrmPlane *> *planes) {
-  int display = static_cast<int>(handle_);
-  int ret = compositor_.Init(resource_manager_, display);
-  if (ret) {
-    ALOGE("Failed display compositor init for display %d (%d)", display, ret);
-    return HWC2::Error::NoResources;
-  }
-
-  // Split up the given display planes into primary and overlay to properly
-  // interface with the composition
-  char use_overlay_planes_prop[PROPERTY_VALUE_MAX];
-  property_get("vendor.hwc.drm.use_overlay_planes", use_overlay_planes_prop,
-               "1");
-  bool use_overlay_planes = strtol(use_overlay_planes_prop, nullptr, 10);
-  for (auto &plane : *planes) {
-    if (plane->GetType() == DRM_PLANE_TYPE_PRIMARY)
-      primary_planes_.push_back(plane);
-    else if (use_overlay_planes && (plane)->GetType() == DRM_PLANE_TYPE_OVERLAY)
-      overlay_planes_.push_back(plane);
-  }
-
-  crtc_ = drm_->GetCrtcForDisplay(display);
-  if (!crtc_) {
-    ALOGE("Failed to get crtc for display %d", display);
-    return HWC2::Error::BadDisplay;
-  }
-
-  connector_ = drm_->GetConnectorForDisplay(display);
-  if (!connector_) {
-    ALOGE("Failed to get connector for display %d", display);
-    return HWC2::Error::BadDisplay;
-  }
-
-  ret = vsync_worker_.Init(drm_, display, [this](int64_t timestamp) {
+HWC2::Error HwcDisplay::Init() {
+  int ret = vsync_worker_.Init(pipeline_, [this](int64_t timestamp) {
     const std::lock_guard<std::mutex> lock(hwc2_->GetResMan().GetMainLock());
     /* vsync callback */
 #if PLATFORM_SDK_VERSION > 29
@@ -159,46 +152,50 @@ HWC2::Error HwcDisplay::Init(std::vector<DrmPlane *> *planes) {
     }
   });
   if (ret) {
-    ALOGE("Failed to create event worker for d=%d %d\n", display, ret);
+    ALOGE("Failed to create event worker for d=%d %d\n", int(handle_), ret);
     return HWC2::Error::BadDisplay;
   }
 
-  ret = flattening_vsync_worker_
-            .Init(drm_, display, [this](int64_t /*timestamp*/) {
-              const std::lock_guard<std::mutex> lock(
-                  hwc2_->GetResMan().GetMainLock());
-              /* Frontend flattening */
-              if (flattenning_state_ >
-                      ClientFlattenningState::ClientRefreshRequested &&
-                  --flattenning_state_ ==
-                      ClientFlattenningState::ClientRefreshRequested &&
-                  hwc2_->refresh_callback_.first != nullptr &&
-                  hwc2_->refresh_callback_.second != nullptr) {
-                hwc2_->refresh_callback_.first(hwc2_->refresh_callback_.second,
-                                               handle_);
-                flattening_vsync_worker_.VSyncControl(false);
-              }
-            });
+  ret = flattening_vsync_worker_.Init(pipeline_, [this](int64_t /*timestamp*/) {
+    const std::lock_guard<std::mutex> lock(hwc2_->GetResMan().GetMainLock());
+    /* Frontend flattening */
+    if (flattenning_state_ > ClientFlattenningState::ClientRefreshRequested &&
+        --flattenning_state_ ==
+            ClientFlattenningState::ClientRefreshRequested &&
+        hwc2_->refresh_callback_.first != nullptr &&
+        hwc2_->refresh_callback_.second != nullptr) {
+      hwc2_->refresh_callback_.first(hwc2_->refresh_callback_.second, handle_);
+      flattening_vsync_worker_.VSyncControl(false);
+    }
+  });
   if (ret) {
-    ALOGE("Failed to create event worker for d=%d %d\n", display, ret);
+    ALOGE("Failed to create event worker for d=%d %d\n", int(handle_), ret);
     return HWC2::Error::BadDisplay;
   }
 
-  ret = BackendManager::GetInstance().SetBackendForDisplay(this);
-  if (ret) {
-    ALOGE("Failed to set backend for d=%d %d\n", display, ret);
-    return HWC2::Error::BadDisplay;
+  if (!IsInHeadlessMode()) {
+    ret = BackendManager::GetInstance().SetBackendForDisplay(this);
+    if (ret) {
+      ALOGE("Failed to set backend for d=%d %d\n", int(handle_), ret);
+      return HWC2::Error::BadDisplay;
+    }
   }
 
   client_layer_.SetLayerBlendMode(HWC2_BLEND_MODE_PREMULTIPLIED);
 
-  return ChosePreferredConfig();
+  return HWC2::Error::None;
 }
 
 HWC2::Error HwcDisplay::ChosePreferredConfig() {
-  HWC2::Error err = configs_.Update(*connector_);
-  if (!IsInHeadlessMode() && err != HWC2::Error::None)
+  HWC2::Error err{};
+  if (!IsInHeadlessMode()) {
+    err = configs_.Update(*pipeline_->connector->Get());
+  } else {
+    configs_.FillHeadless();
+  }
+  if (!IsInHeadlessMode() && err != HWC2::Error::None) {
     return HWC2::Error::BadDisplay;
+  }
 
   return SetActiveConfig(configs_.preferred_config_id);
 }
@@ -217,8 +214,24 @@ HWC2::Error HwcDisplay::CreateLayer(hwc2_layer_t *layer) {
 }
 
 HWC2::Error HwcDisplay::DestroyLayer(hwc2_layer_t layer) {
-  if (!get_layer(layer))
+  if (!get_layer(layer)) {
+    /* Primary display don't send unplug event, instead it replaces
+     * display to headless or to another one and sends Plug event to the
+     * SF. SF can't distinguish this case from virtualized display size
+     * change case and will destroy previously used layers. If we will return
+     * BadLayer, service will print errors to the logcat.
+     *
+     * Nevertheless VTS is trying to destroy 1st layer without adding any
+     * layers prior to that, than it checks for BadLayer result. So we
+     * numbering the layers starting from 2, and use index 1 to catch VTS client
+     * to return BadLayer, making VTS pass.
+     */
+    if (layers_.empty() && layer != 1) {
+      return HWC2::Error::None;
+    }
+
     return HWC2::Error::BadLayer;
+  }
 
   layers_.erase(layer);
   return HWC2::Error::None;
@@ -258,11 +271,12 @@ HWC2::Error HwcDisplay::GetChangedCompositionTypes(uint32_t *num_elements,
 HWC2::Error HwcDisplay::GetClientTargetSupport(uint32_t width, uint32_t height,
                                                int32_t /*format*/,
                                                int32_t dataspace) {
-  std::pair<uint32_t, uint32_t> min = drm_->min_resolution();
-  std::pair<uint32_t, uint32_t> max = drm_->max_resolution();
   if (IsInHeadlessMode()) {
     return HWC2::Error::None;
   }
+
+  std::pair<uint32_t, uint32_t> min = pipeline_->device->GetMinResolution();
+  std::pair<uint32_t, uint32_t> max = pipeline_->device->GetMaxResolution();
 
   if (width < min.first || height < min.second)
     return HWC2::Error::Unsupported;
@@ -293,7 +307,7 @@ HWC2::Error HwcDisplay::GetDisplayAttribute(hwc2_config_t config,
   int conf = static_cast<int>(config);
 
   if (configs_.hwc_configs.count(conf) == 0) {
-    ALOGE("Could not find active mode for %d", conf);
+    ALOGE("Could not find mode #%d", conf);
     return HWC2::Error::BadConfig;
   }
 
@@ -363,7 +377,11 @@ HWC2::Error HwcDisplay::GetDisplayConfigs(uint32_t *num_configs,
 
 HWC2::Error HwcDisplay::GetDisplayName(uint32_t *size, char *name) {
   std::ostringstream stream;
-  stream << "display-" << connector_->id();
+  if (IsInHeadlessMode()) {
+    stream << "null-display";
+  } else {
+    stream << "display-" << GetPipe().connector->Get()->GetId();
+  }
   std::string string = stream.str();
   size_t length = string.length();
   if (!name) {
@@ -471,7 +489,7 @@ HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
   for (std::pair<const uint32_t, HwcLayer *> &l : z_map) {
     DrmHwcLayer layer;
     l.second->PopulateDrmLayer(&layer);
-    int ret = layer.ImportBuffer(drm_);
+    int ret = layer.ImportBuffer(GetPipe().device);
     if (ret) {
       ALOGE("Failed to import layer, ret=%d", ret);
       return HWC2::Error::NoResources;
@@ -479,7 +497,8 @@ HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
     composition_layers.emplace_back(std::move(layer));
   }
 
-  auto composition = std::make_shared<DrmDisplayComposition>(crtc_);
+  auto composition = std::make_shared<DrmDisplayComposition>(
+      GetPipe().crtc->Get());
 
   // TODO(nobody): Don't always assume geometry changed
   int ret = composition->SetLayers(composition_layers.data(),
@@ -489,8 +508,12 @@ HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
     return HWC2::Error::BadLayer;
   }
 
-  std::vector<DrmPlane *> primary_planes(primary_planes_);
-  std::vector<DrmPlane *> overlay_planes(overlay_planes_);
+  std::vector<DrmPlane *> primary_planes;
+  primary_planes.emplace_back(pipeline_->primary_plane->Get());
+  std::vector<DrmPlane *> overlay_planes;
+  for (const auto &owned_plane : pipeline_->overlay_planes) {
+    overlay_planes.emplace_back(owned_plane->Get());
+  }
   ret = composition->Plan(&primary_planes, &overlay_planes);
   if (ret) {
     ALOGV("Failed to plan the composition ret=%d", ret);
@@ -501,7 +524,7 @@ HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
   if (staged_mode) {
     a_args.display_mode = *staged_mode;
   }
-  ret = compositor_.ExecuteAtomicCommit(a_args);
+  ret = GetPipe().compositor->ExecuteAtomicCommit(a_args);
 
   if (ret) {
     if (!a_args.test_only)
@@ -656,7 +679,7 @@ HWC2::Error HwcDisplay::SetPowerMode(int32_t mode_in) {
        * true, as the next composition frame will implicitly activate
        * the display
        */
-      return compositor_.ActivateDisplayUsingDPMS() == 0
+      return GetPipe().compositor->ActivateDisplayUsingDPMS() == 0
                  ? HWC2::Error::None
                  : HWC2::Error::BadParameter;
       break;
@@ -668,7 +691,7 @@ HWC2::Error HwcDisplay::SetPowerMode(int32_t mode_in) {
       return HWC2::Error::BadParameter;
   };
 
-  int err = compositor_.ExecuteAtomicCommit(a_args);
+  int err = GetPipe().compositor->ExecuteAtomicCommit(a_args);
   if (err) {
     ALOGE("Failed to apply the dpms composition err=%d", err);
     return HWC2::Error::BadParameter;
@@ -708,9 +731,16 @@ std::vector<HwcLayer *> HwcDisplay::GetOrderLayersByZPos() {
 
 #if PLATFORM_SDK_VERSION > 29
 HWC2::Error HwcDisplay::GetDisplayConnectionType(uint32_t *outType) {
-  if (connector_->internal())
+  if (IsInHeadlessMode()) {
     *outType = static_cast<uint32_t>(HWC2::DisplayConnectionType::Internal);
-  else if (connector_->external())
+    return HWC2::Error::None;
+  }
+  /* Primary display should be always internal,
+   * otherwise SF will be unhappy and will crash
+   */
+  if (GetPipe().connector->Get()->IsInternal() || handle_ == kPrimaryDisplay)
+    *outType = static_cast<uint32_t>(HWC2::DisplayConnectionType::Internal);
+  else if (GetPipe().connector->Get()->IsExternal())
     *outType = static_cast<uint32_t>(HWC2::DisplayConnectionType::External);
   else
     return HWC2::Error::BadConfig;
@@ -765,11 +795,18 @@ HWC2::Error HwcDisplay::SetContentType(int32_t contentType) {
 HWC2::Error HwcDisplay::GetDisplayIdentificationData(uint8_t *outPort,
                                                      uint32_t *outDataSize,
                                                      uint8_t *outData) {
-  auto blob = connector_->GetEdidBlob();
+  if (IsInHeadlessMode()) {
+    return HWC2::Error::None;
+  }
+  auto blob = GetPipe().connector->Get()->GetEdidBlob();
+
+  *outPort = handle_ - 1;
 
   if (!blob) {
-    ALOGE("Failed to get edid property value.");
-    return HWC2::Error::Unsupported;
+    if (outData == nullptr) {
+      *outDataSize = 0;
+    }
+    return HWC2::Error::None;
   }
 
   if (outData) {
@@ -778,7 +815,6 @@ HWC2::Error HwcDisplay::GetDisplayIdentificationData(uint8_t *outPort,
   } else {
     *outDataSize = blob->length;
   }
-  *outPort = connector_->id();
 
   return HWC2::Error::None;
 }

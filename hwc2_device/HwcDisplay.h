@@ -33,12 +33,14 @@ namespace android {
 class Backend;
 class DrmHwcTwo;
 
+inline constexpr uint32_t kPrimaryDisplay = 0;
+
 class HwcDisplay {
  public:
-  HwcDisplay(ResourceManager *resource_manager, DrmDevice *drm,
-             hwc2_display_t handle, HWC2::DisplayType type, DrmHwcTwo *hwc2);
+  HwcDisplay(DrmDisplayPipeline *pipeline, hwc2_display_t handle,
+             HWC2::DisplayType type, DrmHwcTwo *hwc2);
   HwcDisplay(const HwcDisplay &) = delete;
-  HWC2::Error Init(std::vector<DrmPlane *> *planes);
+  ~HwcDisplay();
 
   HWC2::Error CreateComposition(AtomicCommitArgs &a_args);
   std::vector<HwcLayer *> GetOrderLayersByZPos();
@@ -142,32 +144,16 @@ class HwcDisplay {
   const Backend *backend() const;
   void set_backend(std::unique_ptr<Backend> backend);
 
-  const std::vector<DrmPlane *> &primary_planes() const {
-    return primary_planes_;
-  }
-
-  const std::vector<DrmPlane *> &overlay_planes() const {
-    return overlay_planes_;
+  auto GetHwc2() {
+    return hwc2_;
   }
 
   std::map<hwc2_layer_t, HwcLayer> &layers() {
     return layers_;
   }
 
-  const DrmDisplayCompositor &compositor() const {
-    return compositor_;
-  }
-
-  const DrmDevice *drm() const {
-    return drm_;
-  }
-
-  const DrmConnector *connector() const {
-    return connector_;
-  }
-
-  ResourceManager *resource_manager() const {
-    return resource_manager_;
+  auto &GetPipe() {
+    return *pipeline_;
   }
 
   android_color_transform_t &color_transform_hint() {
@@ -207,7 +193,7 @@ class HwcDisplay {
    * https://source.android.com/devices/graphics/hotplug#handling-common-scenarios
    */
   bool IsInHeadlessMode() {
-    return handle_ == 0 && connector_->state() != DRM_MODE_CONNECTED;
+    return !pipeline_;
   }
 
  private:
@@ -226,25 +212,22 @@ class HwcDisplay {
 
   HwcDisplayConfigs configs_;
 
-  DrmHwcTwo *hwc2_;
+  DrmHwcTwo *const hwc2_;
 
   std::optional<DrmMode> staged_mode;
 
-  ResourceManager *resource_manager_;
-  DrmDevice *drm_;
-  DrmDisplayCompositor compositor_;
-
-  std::vector<DrmPlane *> primary_planes_;
-  std::vector<DrmPlane *> overlay_planes_;
+  DrmDisplayPipeline *const pipeline_;
 
   std::unique_ptr<Backend> backend_;
 
   VSyncWorker vsync_worker_;
-  DrmConnector *connector_ = nullptr;
-  DrmCrtc *crtc_ = nullptr;
-  hwc2_display_t handle_;
+
+  const hwc2_display_t handle_;
   HWC2::DisplayType type_;
-  uint32_t layer_idx_ = 0;
+
+  // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+  static uint32_t layer_idx_;
+
   std::map<hwc2_layer_t, HwcLayer> layers_;
   HwcLayer client_layer_;
   int32_t color_mode_{};
@@ -255,6 +238,8 @@ class HwcDisplay {
   Stats total_stats_;
   Stats prev_stats_;
   std::string DumpDelta(HwcDisplay::Stats delta);
+
+  HWC2::Error Init();
 };
 
 }  // namespace android
