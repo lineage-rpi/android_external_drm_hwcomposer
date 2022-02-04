@@ -115,8 +115,6 @@ HwcDisplay::~HwcDisplay() {
   auto &main_lock = hwc2_->GetResMan().GetMainLock();
   /* Unlock to allow pending vsync callbacks to finish */
   main_lock.unlock();
-  flattening_vsync_worker_.VSyncControl(false);
-  flattening_vsync_worker_.Exit();
   vsync_worker_.VSyncControl(false);
   vsync_worker_.Exit();
   main_lock.lock();
@@ -135,37 +133,19 @@ void HwcDisplay::ClearDisplay() {
 HWC2::Error HwcDisplay::Init() {
   int ret = vsync_worker_.Init(pipeline_, [this](int64_t timestamp) {
     const std::lock_guard<std::mutex> lock(hwc2_->GetResMan().GetMainLock());
-    /* vsync callback */
-#if PLATFORM_SDK_VERSION > 29
-    if (hwc2_->vsync_2_4_callback_.first != nullptr &&
-        hwc2_->vsync_2_4_callback_.second != nullptr) {
-      hwc2_vsync_period_t period_ns{};
+    if (vsync_event_en_) {
+      uint32_t period_ns{};
       GetDisplayVsyncPeriod(&period_ns);
-      hwc2_->vsync_2_4_callback_.first(hwc2_->vsync_2_4_callback_.second,
-                                       handle_, timestamp, period_ns);
-    } else
-#endif
-        if (hwc2_->vsync_callback_.first != nullptr &&
-            hwc2_->vsync_callback_.second != nullptr) {
-      hwc2_->vsync_callback_.first(hwc2_->vsync_callback_.second, handle_,
-                                   timestamp);
+      hwc2_->SendVsyncEventToClient(handle_, timestamp, period_ns);
     }
-  });
-  if (ret) {
-    ALOGE("Failed to create event worker for d=%d %d\n", int(handle_), ret);
-    return HWC2::Error::BadDisplay;
-  }
-
-  ret = flattening_vsync_worker_.Init(pipeline_, [this](int64_t /*timestamp*/) {
-    const std::lock_guard<std::mutex> lock(hwc2_->GetResMan().GetMainLock());
-    /* Frontend flattening */
-    if (flattenning_state_ > ClientFlattenningState::ClientRefreshRequested &&
-        --flattenning_state_ ==
-            ClientFlattenningState::ClientRefreshRequested &&
-        hwc2_->refresh_callback_.first != nullptr &&
-        hwc2_->refresh_callback_.second != nullptr) {
-      hwc2_->refresh_callback_.first(hwc2_->refresh_callback_.second, handle_);
-      flattening_vsync_worker_.VSyncControl(false);
+    if (vsync_flattening_en_) {
+      ProcessFlatenningVsyncInternal();
+    }
+    if (vsync_tracking_en_) {
+      last_vsync_ts_ = timestamp;
+    }
+    if (!vsync_event_en_ && !vsync_flattening_en_ && !vsync_tracking_en_) {
+      vsync_worker_.VSyncControl(false);
     }
   });
   if (ret) {
@@ -238,10 +218,10 @@ HWC2::Error HwcDisplay::DestroyLayer(hwc2_layer_t layer) {
 }
 
 HWC2::Error HwcDisplay::GetActiveConfig(hwc2_config_t *config) const {
-  if (configs_.hwc_configs.count(configs_.active_config_id) == 0)
+  if (configs_.hwc_configs.count(staged_mode_config_id_) == 0)
     return HWC2::Error::BadConfig;
 
-  *config = configs_.active_config_id;
+  *config = staged_mode_config_id_;
   return HWC2::Error::None;
 }
 
@@ -344,7 +324,7 @@ HWC2::Error HwcDisplay::GetDisplayAttribute(hwc2_config_t config,
     case HWC2::Attribute::ConfigGroup:
       /* Dispite ConfigGroup is a part of HWC2.4 API, framework
        * able to request it even if service @2.1 is used */
-      *value = hwc_config.group_id;
+      *value = int(hwc_config.group_id);
       break;
 #endif
     default:
@@ -459,6 +439,26 @@ HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
     return HWC2::Error::None;
   }
 
+  int PrevModeVsyncPeriodNs = static_cast<int>(
+      1E9 / GetPipe().connector->Get()->GetActiveMode().v_refresh());
+
+  auto mode_update_commited_ = false;
+  if (staged_mode_ &&
+      staged_mode_change_time_ <= ResourceManager::GetTimeMonotonicNs()) {
+    client_layer_.SetLayerDisplayFrame(
+        (hwc_rect_t){.left = 0,
+                     .top = 0,
+                     .right = static_cast<int>(staged_mode_->h_display()),
+                     .bottom = static_cast<int>(staged_mode_->v_display())});
+
+    configs_.active_config_id = staged_mode_config_id_;
+
+    a_args.display_mode = *staged_mode_;
+    if (!a_args.test_only) {
+      mode_update_commited_ = true;
+    }
+  }
+
   // order the layers by z-order
   bool use_client_layer = false;
   uint32_t client_z_order = UINT32_MAX;
@@ -497,34 +497,21 @@ HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
     composition_layers.emplace_back(std::move(layer));
   }
 
-  auto composition = std::make_shared<DrmDisplayComposition>(
-      GetPipe().crtc->Get());
-
-  // TODO(nobody): Don't always assume geometry changed
-  int ret = composition->SetLayers(composition_layers.data(),
-                                   composition_layers.size());
-  if (ret) {
-    ALOGE("Failed to set layers in the composition ret=%d", ret);
-    return HWC2::Error::BadLayer;
-  }
-
-  std::vector<DrmPlane *> primary_planes;
-  primary_planes.emplace_back(pipeline_->primary_plane->Get());
-  std::vector<DrmPlane *> overlay_planes;
-  for (const auto &owned_plane : pipeline_->overlay_planes) {
-    overlay_planes.emplace_back(owned_plane->Get());
-  }
-  ret = composition->Plan(&primary_planes, &overlay_planes);
-  if (ret) {
-    ALOGV("Failed to plan the composition ret=%d", ret);
+  /* Store plan to ensure shared planes won't be stolen by other display
+   * in between of ValidateDisplay() and PresentDisplay() calls
+   */
+  current_plan_ = DrmKmsPlan::CreateDrmKmsPlan(GetPipe(),
+                                               std::move(composition_layers));
+  if (!current_plan_) {
+    if (!a_args.test_only) {
+      ALOGE("Failed to create DrmKmsPlan");
+    }
     return HWC2::Error::BadConfig;
   }
 
-  a_args.composition = composition;
-  if (staged_mode) {
-    a_args.display_mode = *staged_mode;
-  }
-  ret = GetPipe().compositor->ExecuteAtomicCommit(a_args);
+  a_args.composition = current_plan_;
+
+  int ret = GetPipe().compositor->ExecuteAtomicCommit(a_args);
 
   if (ret) {
     if (!a_args.test_only)
@@ -532,8 +519,13 @@ HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
     return HWC2::Error::BadParameter;
   }
 
-  if (!a_args.test_only) {
-    staged_mode.reset();
+  if (mode_update_commited_) {
+    staged_mode_.reset();
+    vsync_tracking_en_ = false;
+    if (last_vsync_ts_ != 0) {
+      hwc2_->SendVsyncPeriodTimingChangedEventToClient(
+          handle_, last_vsync_ts_ + PrevModeVsyncPeriodNs);
+    }
   }
 
   return HWC2::Error::None;
@@ -571,28 +563,22 @@ HWC2::Error HwcDisplay::PresentDisplay(int32_t *present_fence) {
   return HWC2::Error::None;
 }
 
-HWC2::Error HwcDisplay::SetActiveConfig(hwc2_config_t config) {
-  int conf = static_cast<int>(config);
-
-  if (configs_.hwc_configs.count(conf) == 0) {
-    ALOGE("Could not find active mode for %d", conf);
+HWC2::Error HwcDisplay::SetActiveConfigInternal(uint32_t config,
+                                                int64_t change_time) {
+  if (configs_.hwc_configs.count(config) == 0) {
+    ALOGE("Could not find active mode for %u", config);
     return HWC2::Error::BadConfig;
   }
 
-  auto &mode = configs_.hwc_configs[conf].mode;
-
-  staged_mode = mode;
-
-  configs_.active_config_id = conf;
-
-  // Setup the client layer's dimensions
-  hwc_rect_t display_frame = {.left = 0,
-                              .top = 0,
-                              .right = static_cast<int>(mode.h_display()),
-                              .bottom = static_cast<int>(mode.v_display())};
-  client_layer_.SetLayerDisplayFrame(display_frame);
+  staged_mode_ = configs_.hwc_configs[config].mode;
+  staged_mode_change_time_ = change_time;
+  staged_mode_config_id_ = config;
 
   return HWC2::Error::None;
+}
+
+HWC2::Error HwcDisplay::SetActiveConfig(hwc2_config_t config) {
+  return SetActiveConfigInternal(config, ResourceManager::GetTimeMonotonicNs());
 }
 
 /* Find API details at:
@@ -700,7 +686,10 @@ HWC2::Error HwcDisplay::SetPowerMode(int32_t mode_in) {
 }
 
 HWC2::Error HwcDisplay::SetVsyncEnabled(int32_t enabled) {
-  vsync_worker_.VSyncControl(HWC2_VSYNC_ENABLE == enabled);
+  vsync_event_en_ = HWC2_VSYNC_ENABLE == enabled;
+  if (vsync_event_en_) {
+    vsync_worker_.VSyncControl(true);
+  }
   return HWC2::Error::None;
 }
 
@@ -729,6 +718,13 @@ std::vector<HwcLayer *> HwcDisplay::GetOrderLayersByZPos() {
   return ordered_layers;
 }
 
+HWC2::Error HwcDisplay::GetDisplayVsyncPeriod(
+    uint32_t *outVsyncPeriod /* ns */) {
+  return GetDisplayAttribute(configs_.active_config_id,
+                             HWC2_ATTRIBUTE_VSYNC_PERIOD,
+                             (int32_t *)(outVsyncPeriod));
+}
+
 #if PLATFORM_SDK_VERSION > 29
 HWC2::Error HwcDisplay::GetDisplayConnectionType(uint32_t *outType) {
   if (IsInHeadlessMode()) {
@@ -748,22 +744,38 @@ HWC2::Error HwcDisplay::GetDisplayConnectionType(uint32_t *outType) {
   return HWC2::Error::None;
 }
 
-HWC2::Error HwcDisplay::GetDisplayVsyncPeriod(
-    hwc2_vsync_period_t *outVsyncPeriod /* ns */) {
-  return GetDisplayAttribute(configs_.active_config_id,
-                             HWC2_ATTRIBUTE_VSYNC_PERIOD,
-                             (int32_t *)(outVsyncPeriod));
-}
-
 HWC2::Error HwcDisplay::SetActiveConfigWithConstraints(
-    hwc2_config_t /*config*/,
+    hwc2_config_t config,
     hwc_vsync_period_change_constraints_t *vsyncPeriodChangeConstraints,
     hwc_vsync_period_change_timeline_t *outTimeline) {
   if (vsyncPeriodChangeConstraints == nullptr || outTimeline == nullptr) {
     return HWC2::Error::BadParameter;
   }
 
-  return HWC2::Error::BadConfig;
+  uint32_t current_vsync_period{};
+  GetDisplayVsyncPeriod(&current_vsync_period);
+
+  if (vsyncPeriodChangeConstraints->seamlessRequired) {
+    return HWC2::Error::SeamlessNotAllowed;
+  }
+
+  outTimeline->refreshTimeNanos = vsyncPeriodChangeConstraints
+                                      ->desiredTimeNanos -
+                                  current_vsync_period;
+  auto ret = SetActiveConfigInternal(config, outTimeline->refreshTimeNanos);
+  if (ret != HWC2::Error::None) {
+    return ret;
+  }
+
+  outTimeline->refreshRequired = true;
+  outTimeline->newVsyncAppliedTimeNanos = vsyncPeriodChangeConstraints
+                                              ->desiredTimeNanos;
+
+  last_vsync_ts_ = 0;
+  vsync_tracking_en_ = true;
+  vsync_worker_.VSyncControl(true);
+
+  return HWC2::Error::None;
 }
 
 HWC2::Error HwcDisplay::SetAutoLowLatencyMode(bool /*on*/) {
@@ -885,6 +897,39 @@ const Backend *HwcDisplay::backend() const {
 
 void HwcDisplay::set_backend(std::unique_ptr<Backend> backend) {
   backend_ = std::move(backend);
+}
+
+/* returns true if composition should be sent to client */
+bool HwcDisplay::ProcessClientFlatteningState(bool skip) {
+  int flattenning_state = flattenning_state_;
+  if (flattenning_state == ClientFlattenningState::Disabled) {
+    return false;
+  }
+
+  if (skip) {
+    flattenning_state_ = ClientFlattenningState::NotRequired;
+    return false;
+  }
+
+  if (flattenning_state == ClientFlattenningState::ClientRefreshRequested) {
+    flattenning_state_ = ClientFlattenningState::Flattened;
+    return true;
+  }
+
+  vsync_flattening_en_ = true;
+  vsync_worker_.VSyncControl(true);
+  flattenning_state_ = ClientFlattenningState::VsyncCountdownMax;
+  return false;
+}
+
+void HwcDisplay::ProcessFlatenningVsyncInternal() {
+  if (flattenning_state_ > ClientFlattenningState::ClientRefreshRequested &&
+      --flattenning_state_ == ClientFlattenningState::ClientRefreshRequested &&
+      hwc2_->refresh_callback_.first != nullptr &&
+      hwc2_->refresh_callback_.second != nullptr) {
+    hwc2_->refresh_callback_.first(hwc2_->refresh_callback_.second, handle_);
+    vsync_flattening_en_ = false;
+  }
 }
 
 }  // namespace android
