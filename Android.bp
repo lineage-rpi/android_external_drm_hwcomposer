@@ -66,6 +66,7 @@ cc_defaults {
     cppflags: [
         "-DHWC2_INCLUDE_STRINGIFICATION",
         "-DHWC2_USE_CPP11",
+        "-std=c++17",
     ],
 
     product_variables: {
@@ -84,9 +85,9 @@ filegroup {
         "bufferinfo/BufferInfoGetter.cpp",
         "bufferinfo/BufferInfoMapperMetadata.cpp",
 
-        "compositor/DrmDisplayCompositor.cpp",
         "compositor/DrmKmsPlan.cpp",
 
+        "drm/DrmAtomicStateManager.cpp",
         "drm/DrmConnector.cpp",
         "drm/DrmCrtc.cpp",
         "drm/DrmDevice.cpp",
@@ -105,7 +106,6 @@ filegroup {
         "backend/Backend.cpp",
         "backend/BackendClient.cpp",
         "backend/BackendManager.cpp",
-        "backend/BackendRCarDu.cpp",
 
         "hwc2_device/DrmHwcTwo.cpp",
         "hwc2_device/HwcDisplay.cpp",

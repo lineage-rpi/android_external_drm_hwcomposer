@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef ANDROID_DRM_DISPLAY_COMPOSITOR_H_
-#define ANDROID_DRM_DISPLAY_COMPOSITOR_H_
+#ifndef ANDROID_DRM_ATOMIC_STATE_MANAGER_H_
+#define ANDROID_DRM_ATOMIC_STATE_MANAGER_H_
 
 #include <pthread.h>
 
@@ -25,7 +25,7 @@
 #include <sstream>
 #include <tuple>
 
-#include "DrmKmsPlan.h"
+#include "compositor/DrmKmsPlan.h"
 #include "drm/DrmPlane.h"
 #include "drm/ResourceManager.h"
 #include "drm/VSyncWorker.h"
@@ -39,27 +39,23 @@ struct AtomicCommitArgs {
   std::optional<DrmMode> display_mode;
   std::optional<bool> active;
   std::shared_ptr<DrmKmsPlan> composition;
-  /* 'clear' should never be used together with 'composition' */
-  bool clear_active_composition = false;
 
   /* out */
   UniqueFd out_fence;
 
   /* helpers */
   auto HasInputs() -> bool {
-    return display_mode || active || composition || clear_active_composition;
+    return display_mode || active || composition;
   }
 };
 
-class DrmDisplayCompositor {
+class DrmAtomicStateManager {
  public:
-  explicit DrmDisplayCompositor(DrmDisplayPipeline *pipe) : pipe_(pipe){};
-  ~DrmDisplayCompositor() = default;
+  explicit DrmAtomicStateManager(DrmDisplayPipeline *pipe) : pipe_(pipe){};
+  DrmAtomicStateManager(const DrmAtomicStateManager &) = delete;
+  ~DrmAtomicStateManager() = default;
 
   auto ExecuteAtomicCommit(AtomicCommitArgs &args) -> int;
-
-  DrmDisplayCompositor(const DrmDisplayCompositor &) = delete;
-
   auto ActivateDisplayUsingDPMS() -> int;
 
  private:
