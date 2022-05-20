@@ -15,11 +15,14 @@
  */
 
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+#define ATRACE_TAG ATRACE_TAG_GRAPHICS
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define LOG_TAG "hwc-platform-drm-generic"
 
 #include "DrmFbImporter.h"
 
 #include <hardware/gralloc.h>
+#include <utils/Trace.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
@@ -31,9 +34,11 @@
 
 namespace android {
 
-auto DrmFbIdHandle::CreateInstance(hwc_drm_bo_t *bo, GemHandle first_gem_handle,
+auto DrmFbIdHandle::CreateInstance(BufferInfo *bo, GemHandle first_gem_handle,
                                    DrmDevice &drm)
     -> std::shared_ptr<DrmFbIdHandle> {
+  ATRACE_NAME("Import dmabufs and register FB");
+
   // NOLINTNEXTLINE(cppcoreguidelines-owning-memory): priv. constructor usage
   std::shared_ptr<DrmFbIdHandle> local(new DrmFbIdHandle(drm));
 
@@ -87,6 +92,8 @@ auto DrmFbIdHandle::CreateInstance(hwc_drm_bo_t *bo, GemHandle first_gem_handle,
 }
 
 DrmFbIdHandle::~DrmFbIdHandle() {
+  ATRACE_NAME("Close FB and dmabufs");
+
   /* Destroy framebuffer object */
   if (drmModeRmFB(drm_->GetFd(), fb_id_) != 0) {
     ALOGE("Failed to rm fb");
@@ -116,7 +123,7 @@ DrmFbIdHandle::~DrmFbIdHandle() {
   }
 }
 
-auto DrmFbImporter::GetOrCreateFbId(hwc_drm_bo_t *bo)
+auto DrmFbImporter::GetOrCreateFbId(BufferInfo *bo)
     -> std::shared_ptr<DrmFbIdHandle> {
   /* Lookup DrmFbIdHandle in cache first. First handle serves as a cache key. */
   GemHandle first_handle = 0;
