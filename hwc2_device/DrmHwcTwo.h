@@ -14,8 +14,7 @@
  * limitations under the License.
  */
 
-#ifndef ANDROID_DRM_HWC_TWO_H_
-#define ANDROID_DRM_HWC_TWO_H_
+#pragma once
 
 #include <hardware/hwcomposer2.h>
 
@@ -31,7 +30,7 @@ class DrmHwcTwo : public PipelineToFrontendBindingInterface {
 
   std::pair<HWC2_PFN_HOTPLUG, hwc2_callback_data_t> hotplug_callback_{};
   std::pair<HWC2_PFN_VSYNC, hwc2_callback_data_t> vsync_callback_{};
-#if PLATFORM_SDK_VERSION > 29
+#if __ANDROID_API__ > 29
   std::pair<HWC2_PFN_VSYNC_2_4, hwc2_callback_data_t> vsync_2_4_callback_{};
   std::pair<HWC2_PFN_VSYNC_PERIOD_TIMING_CHANGED, hwc2_callback_data_t>
       period_timing_changed_callback_{};
@@ -86,5 +85,3 @@ class DrmHwcTwo : public PipelineToFrontendBindingInterface {
   uint32_t last_display_handle_ = kPrimaryDisplay;
 };
 }  // namespace android
-
-#endif

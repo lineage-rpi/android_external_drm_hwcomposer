@@ -14,8 +14,7 @@
  * limitations under the License.
  */
 
-#ifndef ANDROID_HWC2_DEVICE_HWC_DISPLAY_CONFIGS_H
-#define ANDROID_HWC2_DEVICE_HWC_DISPLAY_CONFIGS_H
+#pragma once
 
 #include <hardware/hwcomposer2.h>
 
@@ -30,11 +29,11 @@ class DrmConnector;
 struct HwcDisplayConfig {
   uint32_t id{};
   uint32_t group_id{};
-  DrmMode mode;
+  DrmMode mode{};
   bool disabled{};
 
   bool IsInterlaced() const {
-    return (mode.flags() & DRM_MODE_FLAG_INTERLACE) != 0;
+    return (mode.GetRawMode().flags & DRM_MODE_FLAG_INTERLACE) != 0;
   }
 };
 
@@ -55,5 +54,3 @@ struct HwcDisplayConfigs {
 };
 
 }  // namespace android
-
-#endif

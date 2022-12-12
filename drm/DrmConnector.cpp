@@ -101,18 +101,17 @@ int DrmConnector::UpdateEdidProperty() {
 }
 
 auto DrmConnector::GetEdidBlob() -> DrmModePropertyBlobUnique {
-  uint64_t blob_id = 0;
-  int ret = UpdateEdidProperty();
+  auto ret = UpdateEdidProperty();
   if (ret != 0) {
     return {};
   }
 
-  std::tie(ret, blob_id) = GetEdidProperty().value();
-  if (ret != 0) {
+  auto blob_id = GetEdidProperty().GetValue();
+  if (!blob_id) {
     return {};
   }
 
-  return MakeDrmModePropertyBlobUnique(drm_->GetFd(), blob_id);
+  return MakeDrmModePropertyBlobUnique(drm_->GetFd(), *blob_id);
 }
 
 bool DrmConnector::IsInternal() const {
@@ -196,19 +195,19 @@ int DrmConnector::UpdateModes() {
     if (!exists) {
       DrmMode m(&connector_->modes[i]);
       ALOGD("supported mode %dx%d@%f for display in connector %s",
-            m.h_display(), m.v_display(), m.v_refresh(), GetName().c_str());
+            m.GetRawMode().hdisplay, m.GetRawMode().vdisplay, m.GetVRefresh(), GetName().c_str());
       if (xres && yres) {
-        if (!rate && m.h_display() == xres && m.v_display() == yres) {
-          rate = uint32_t(m.v_refresh());
+        if (!rate && m.GetRawMode().hdisplay == xres && m.GetRawMode().vdisplay == yres) {
+          rate = uint32_t(m.GetVRefresh());
         }
-        if (m.h_display() != xres || m.v_display() != yres ||
-              uint32_t(m.v_refresh()) != rate) {
+        if (m.GetRawMode().hdisplay != xres || m.GetRawMode().vdisplay != yres ||
+              uint32_t(m.GetVRefresh()) != rate) {
           continue;
         }
       }
       modes_.emplace_back(m);
       ALOGD("add new mode %dx%d@%.0f for display in connector %s",
-            m.h_display(), m.v_display(), m.v_refresh(), GetName().c_str());
+            m.GetRawMode().hdisplay, m.GetRawMode().vdisplay, m.GetVRefresh(), GetName().c_str());
     }
   }
 
