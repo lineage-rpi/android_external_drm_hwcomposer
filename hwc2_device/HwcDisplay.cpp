@@ -301,28 +301,28 @@ HWC2::Error HwcDisplay::GetDisplayAttribute(hwc2_config_t config,
   auto attribute = static_cast<HWC2::Attribute>(attribute_in);
   switch (attribute) {
     case HWC2::Attribute::Width:
-      *value = static_cast<int>(hwc_config.mode.h_display());
+      *value = static_cast<int>(hwc_config.mode.GetRawMode().hdisplay);
       break;
     case HWC2::Attribute::Height:
-      *value = static_cast<int>(hwc_config.mode.v_display());
+      *value = static_cast<int>(hwc_config.mode.GetRawMode().vdisplay);
       break;
     case HWC2::Attribute::VsyncPeriod:
       // in nanoseconds
-      *value = static_cast<int>(1E9 / hwc_config.mode.v_refresh());
+      *value = static_cast<int>(1E9 / hwc_config.mode.GetVRefresh());
       break;
     case HWC2::Attribute::DpiX:
       // Dots per 1000 inches
-      *value = mm_width ? static_cast<int>(hwc_config.mode.h_display() *
-                                           kUmPerInch / mm_width)
+      *value = mm_width ? int(hwc_config.mode.GetRawMode().hdisplay *
+                              kUmPerInch / mm_width)
                         : -1;
       break;
     case HWC2::Attribute::DpiY:
       // Dots per 1000 inches
-      *value = mm_height ? static_cast<int>(hwc_config.mode.v_display() *
-                                            kUmPerInch / mm_height)
+      *value = mm_height ? int(hwc_config.mode.GetRawMode().vdisplay *
+                               kUmPerInch / mm_height)
                          : -1;
       break;
-#if PLATFORM_SDK_VERSION > 29
+#if __ANDROID_API__ > 29
     case HWC2::Attribute::ConfigGroup:
       /* Dispite ConfigGroup is a part of HWC2.4 API, framework
        * able to request it even if service @2.1 is used */
@@ -451,7 +451,7 @@ HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
   }
 
   auto PrevModeVsyncPeriodNs = static_cast<int>(
-      1E9 / GetPipe().connector->Get()->GetActiveMode().v_refresh());
+      1E9 / GetPipe().connector->Get()->GetActiveMode().GetVRefresh());
 
   auto mode_update_commited_ = false;
   if (staged_mode_ &&
@@ -459,8 +459,8 @@ HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
     client_layer_.SetLayerDisplayFrame(
         (hwc_rect_t){.left = 0,
                      .top = 0,
-                     .right = static_cast<int>(staged_mode_->h_display()),
-                     .bottom = static_cast<int>(staged_mode_->v_display())});
+                     .right = int(staged_mode_->GetRawMode().hdisplay),
+                     .bottom = int(staged_mode_->GetRawMode().vdisplay)});
 
     configs_.active_config_id = staged_mode_config_id_;
 
@@ -772,7 +772,7 @@ HWC2::Error HwcDisplay::GetDisplayVsyncPeriod(
                              (int32_t *)(outVsyncPeriod));
 }
 
-#if PLATFORM_SDK_VERSION > 29
+#if __ANDROID_API__ > 29
 HWC2::Error HwcDisplay::GetDisplayConnectionType(uint32_t *outType) {
   if (IsInHeadlessMode()) {
     *outType = static_cast<uint32_t>(HWC2::DisplayConnectionType::Internal);
@@ -850,7 +850,7 @@ HWC2::Error HwcDisplay::SetContentType(int32_t contentType) {
 }
 #endif
 
-#if PLATFORM_SDK_VERSION > 28
+#if __ANDROID_API__ > 28
 HWC2::Error HwcDisplay::GetDisplayIdentificationData(uint8_t *outPort,
                                                      uint32_t *outDataSize,
                                                      uint8_t *outData) {
@@ -895,9 +895,9 @@ HWC2::Error HwcDisplay::SetDisplayBrightness(float /* brightness */) {
   return HWC2::Error::Unsupported;
 }
 
-#endif /* PLATFORM_SDK_VERSION > 28 */
+#endif /* __ANDROID_API__ > 28 */
 
-#if PLATFORM_SDK_VERSION > 27
+#if __ANDROID_API__ > 27
 
 HWC2::Error HwcDisplay::GetRenderIntents(
     int32_t mode, uint32_t *outNumIntents,
@@ -933,7 +933,7 @@ HWC2::Error HwcDisplay::SetColorModeWithIntent(int32_t mode, int32_t intent) {
   return HWC2::Error::None;
 }
 
-#endif /* PLATFORM_SDK_VERSION > 27 */
+#endif /* __ANDROID_API__ > 27 */
 
 const Backend *HwcDisplay::backend() const {
   return backend_.get();
