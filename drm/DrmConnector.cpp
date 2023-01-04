@@ -214,8 +214,4 @@ int DrmConnector::UpdateModes() {
   return 0;
 }
 
-void DrmConnector::SetActiveMode(DrmMode &mode) {
-  active_mode_ = mode;
-}
-
 }  // namespace android

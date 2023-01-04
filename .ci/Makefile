@@ -23,13 +23,10 @@ TIDY_FILES_OVERRIDE := \
     bufferinfo/legacy/BufferInfoMinigbm.cpp:COARSE      \
     drm/DrmFbImporter.h:FINE                            \
     drm/DrmUnique.h:FINE                                \
-    drm/VSyncWorker.cpp:COARSE                          \
     hwc2_device/DrmHwcTwo.cpp:COARSE                    \
     hwc2_device/DrmHwcTwo.h:COARSE                      \
     hwc2_device/HwcDisplay.cpp:COARSE                   \
     hwc2_device/HwcDisplay.h:COARSE                     \
-    tests/worker_test.cpp:COARSE                        \
-    utils/Worker.h:COARSE                               \
     utils/UniqueFd.h:FINE                               \
     utils/log.h:FINE                                    \
     utils/properties.h:FINE                             \
