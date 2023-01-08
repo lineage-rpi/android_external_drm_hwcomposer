@@ -18,7 +18,9 @@
 
 #include <hardware/hwcomposer2.h>
 
+#include <atomic>
 #include <optional>
+#include <sstream>
 
 #include "HwcDisplayConfigs.h"
 #include "compositor/LayerData.h"
@@ -208,7 +210,7 @@ class HwcDisplay {
 
   std::unique_ptr<Backend> backend_;
 
-  VSyncWorker vsync_worker_;
+  std::shared_ptr<VSyncWorker> vsync_worker_;
   bool vsync_event_en_{};
   bool vsync_flattening_en_{};
   bool vsync_tracking_en_{};
