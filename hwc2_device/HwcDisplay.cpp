@@ -50,32 +50,12 @@ std::string HwcDisplay::DumpDelta(HwcDisplay::Stats delta) {
 }
 
 std::string HwcDisplay::Dump() {
-  std::string flattening_state_str;
-  switch (flattenning_state_) {
-    case ClientFlattenningState::Disabled:
-      flattening_state_str = "Disabled";
-      break;
-    case ClientFlattenningState::NotRequired:
-      flattening_state_str = "Not needed";
-      break;
-    case ClientFlattenningState::Flattened:
-      flattening_state_str = "Active";
-      break;
-    case ClientFlattenningState::ClientRefreshRequested:
-      flattening_state_str = "Refresh requested";
-      break;
-    default:
-      flattening_state_str = std::to_string(flattenning_state_) +
-                             " VSync remains";
-  }
-
   auto connector_name = IsInHeadlessMode()
                             ? std::string("NULL-DISPLAY")
                             : GetPipe().connector->Get()->GetName();
 
   std::stringstream ss;
   ss << "- Display on: " << connector_name << "\n"
-     << "  Flattening state: " << flattening_state_str << "\n"
      << "Statistics since system boot:\n"
      << DumpDelta(total_stats_) << "\n\n"
      << "Statistics since last dumpsys request:\n"
@@ -87,17 +67,18 @@ std::string HwcDisplay::Dump() {
 
 HwcDisplay::HwcDisplay(hwc2_display_t handle, HWC2::DisplayType type,
                        DrmHwcTwo *hwc2)
-    : hwc2_(hwc2),
-      handle_(handle),
-      type_(type),
-      client_layer_(this),
-      color_transform_hint_(HAL_COLOR_TRANSFORM_IDENTITY) {
-  // clang-format off
-  color_transform_matrix_ = {1.0, 0.0, 0.0, 0.0,
-                             0.0, 1.0, 0.0, 0.0,
-                             0.0, 0.0, 1.0, 0.0,
-                             0.0, 0.0, 0.0, 1.0};
-  // clang-format on
+    : hwc2_(hwc2), handle_(handle), type_(type), client_layer_(this){};
+
+void HwcDisplay::SetColorMarixToIdentity() {
+  color_matrix_ = std::make_shared<drm_color_ctm>();
+  for (int i = 0; i < kCtmCols; i++) {
+    for (int j = 0; j < kCtmRows; j++) {
+      constexpr uint64_t kOne = (1ULL << 32); /* 1.0 in s31.32 format */
+      color_matrix_->matrix[i * kCtmRows + j] = (i == j) ? kOne : 0;
+    }
+  }
+
+  color_transform_hint_ = HAL_COLOR_TRANSFORM_IDENTITY;
 }
 
 HwcDisplay::~HwcDisplay() = default;
@@ -139,6 +120,10 @@ void HwcDisplay::Deinit() {
 
     current_plan_.reset();
     backend_.reset();
+    if (flatcon_) {
+      flatcon_->StopThread();
+      flatcon_.reset();
+    }
   }
 
   if (vsync_worker_) {
@@ -161,14 +146,10 @@ HWC2::Error HwcDisplay::Init() {
               GetDisplayVsyncPeriod(&period_ns);
               hwc2_->SendVsyncEventToClient(handle_, timestamp, period_ns);
             }
-            if (vsync_flattening_en_) {
-              ProcessFlatenningVsyncInternal();
-            }
             if (vsync_tracking_en_) {
               last_vsync_ts_ = timestamp;
             }
-            if (!vsync_event_en_ && !vsync_flattening_en_ &&
-                !vsync_tracking_en_) {
+            if (!vsync_event_en_ && !vsync_tracking_en_) {
               vsync_worker_->VSyncControl(false);
             }
           },
@@ -191,9 +172,18 @@ HWC2::Error HwcDisplay::Init() {
       ALOGE("Failed to set backend for d=%d %d\n", int(handle_), ret);
       return HWC2::Error::BadDisplay;
     }
+    auto flatcbk = (struct FlatConCallbacks){.trigger = [this]() {
+      if (hwc2_->refresh_callback_.first != nullptr &&
+          hwc2_->refresh_callback_.second != nullptr)
+        hwc2_->refresh_callback_.first(hwc2_->refresh_callback_.second,
+                                       handle_);
+    }};
+    flatcon_ = FlatteningController::CreateInstance(flatcbk);
   }
 
   client_layer_.SetLayerBlendMode(HWC2_BLEND_MODE_PREMULTIPLIED);
+
+  SetColorMarixToIdentity();
 
   return HWC2::Error::None;
 }
@@ -452,7 +442,7 @@ HWC2::Error HwcDisplay::GetReleaseFences(uint32_t *num_elements,
     }
 
     layers[num_layers - 1] = l.first;
-    fences[num_layers - 1] = UniqueFd::Dup(present_fence_.Get()).Release();
+    fences[num_layers - 1] = DupFd(present_fence_);
   }
   *num_elements = num_layers;
 
@@ -464,6 +454,8 @@ HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
     ALOGE("%s: Display is in headless mode, should never reach here", __func__);
     return HWC2::Error::None;
   }
+
+  a_args.color_matrix = color_matrix_;
 
   uint32_t prev_vperiod_ns = 0;
   GetDisplayVsyncPeriod(&prev_vperiod_ns);
@@ -513,7 +505,7 @@ HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
 
   /* Import & populate */
   for (std::pair<const uint32_t, HwcLayer *> &l : z_map) {
-    l.second->PopulateLayerData(a_args.test_only);
+    l.second->PopulateLayerData();
   }
 
   // now that they're ordered by z, add them to the composition
@@ -528,7 +520,7 @@ HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
        */
       return HWC2::Error::BadLayer;
     }
-    composition_layers.emplace_back(l.second->GetLayerData().Clone());
+    composition_layers.emplace_back(l.second->GetLayerData());
   }
 
   /* Store plan to ensure shared planes won't be stolen by other display
@@ -592,8 +584,11 @@ HWC2::Error HwcDisplay::PresentDisplay(int32_t *out_present_fence) {
   if (ret != HWC2::Error::None)
     return ret;
 
-  this->present_fence_ = UniqueFd::Dup(a_args.out_fence.Get());
-  *out_present_fence = a_args.out_fence.Release();
+  this->present_fence_ = a_args.out_fence;
+  *out_present_fence = DupFd(a_args.out_fence);
+
+  // Reset the color matrix so we don't apply it over and over again.
+  color_matrix_ = {};
 
   ++frame_no_;
   return HWC2::Error::None;
@@ -641,7 +636,7 @@ HWC2::Error HwcDisplay::SetClientTarget(buffer_handle_t target,
     return HWC2::Error::None;
   }
 
-  client_layer_.PopulateLayerData(/*test = */ true);
+  client_layer_.PopulateLayerData();
   if (!client_layer_.IsLayerUsableAsDevice()) {
     ALOGE("Client layer must be always usable by DRM/KMS");
     return HWC2::Error::BadLayer;
@@ -673,6 +668,8 @@ HWC2::Error HwcDisplay::SetColorMode(int32_t mode) {
   return HWC2::Error::None;
 }
 
+#include <xf86drmMode.h>
+
 HWC2::Error HwcDisplay::SetColorTransform(const float *matrix, int32_t hint) {
   if (hint < HAL_COLOR_TRANSFORM_IDENTITY ||
       hint > HAL_COLOR_TRANSFORM_CORRECT_TRITANOPIA)
@@ -682,10 +679,44 @@ HWC2::Error HwcDisplay::SetColorTransform(const float *matrix, int32_t hint) {
     return HWC2::Error::BadParameter;
 
   color_transform_hint_ = static_cast<android_color_transform_t>(hint);
-  if (color_transform_hint_ == HAL_COLOR_TRANSFORM_ARBITRARY_MATRIX)
-    std::copy(matrix, matrix + MATRIX_SIZE, color_transform_matrix_.begin());
+
+  if (!GetPipe().crtc->Get()->GetCtmProperty())
+    return HWC2::Error::None;
+
+  switch (color_transform_hint_) {
+    case HAL_COLOR_TRANSFORM_IDENTITY:
+      SetColorMarixToIdentity();
+      break;
+    case HAL_COLOR_TRANSFORM_ARBITRARY_MATRIX:
+      color_matrix_ = std::make_shared<drm_color_ctm>();
+      /* DRM expects a 3x3 matrix, but the HAL provides a 4x4 matrix. */
+      for (int i = 0; i < kCtmCols; i++) {
+        for (int j = 0; j < kCtmRows; j++) {
+          constexpr int kInCtmRows = 4;
+          /* HAL matrix type is float, but DRM expects a s31.32 fix point */
+          auto value = uint64_t(matrix[i * kInCtmRows + j] * float(1ULL << 32));
+          color_matrix_->matrix[i * kCtmRows + j] = value;
+        }
+      }
+      break;
+    default:
+      return HWC2::Error::Unsupported;
+  }
 
   return HWC2::Error::None;
+}
+
+bool HwcDisplay::CtmByGpu() {
+  if (color_transform_hint_ == HAL_COLOR_TRANSFORM_IDENTITY)
+    return false;
+
+  if (GetPipe().crtc->Get()->GetCtmProperty())
+    return false;
+
+  if (GetHwc2()->GetResMan().GetCtmHandling() == CtmHandling::kDrmOrIgnore)
+    return false;
+
+  return true;
 }
 
 HWC2::Error HwcDisplay::SetOutputBuffer(buffer_handle_t /*buffer*/,
@@ -892,12 +923,31 @@ HWC2::Error HwcDisplay::GetDisplayIdentificationData(uint8_t *outPort,
 }
 
 HWC2::Error HwcDisplay::GetDisplayCapabilities(uint32_t *outNumCapabilities,
-                                               uint32_t * /*outCapabilities*/) {
+                                               uint32_t *outCapabilities) {
   if (outNumCapabilities == nullptr) {
     return HWC2::Error::BadParameter;
   }
 
-  *outNumCapabilities = 0;
+  bool skip_ctm = false;
+
+  // Skip client CTM if user requested DRM_OR_IGNORE
+  if (GetHwc2()->GetResMan().GetCtmHandling() == CtmHandling::kDrmOrIgnore)
+    skip_ctm = true;
+
+  // Skip client CTM if DRM can handle it
+  if (!skip_ctm && !IsInHeadlessMode() &&
+      GetPipe().crtc->Get()->GetCtmProperty())
+    skip_ctm = true;
+
+  if (!skip_ctm) {
+    *outNumCapabilities = 0;
+    return HWC2::Error::None;
+  }
+
+  *outNumCapabilities = 1;
+  if (outCapabilities) {
+    outCapabilities[0] = HWC2_DISPLAY_CAPABILITY_SKIP_CLIENT_COLOR_TRANSFORM;
+  }
 
   return HWC2::Error::None;
 }
@@ -957,39 +1007,6 @@ const Backend *HwcDisplay::backend() const {
 
 void HwcDisplay::set_backend(std::unique_ptr<Backend> backend) {
   backend_ = std::move(backend);
-}
-
-/* returns true if composition should be sent to client */
-bool HwcDisplay::ProcessClientFlatteningState(bool skip) {
-  const int flattenning_state = flattenning_state_;
-  if (flattenning_state == ClientFlattenningState::Disabled) {
-    return false;
-  }
-
-  if (skip) {
-    flattenning_state_ = ClientFlattenningState::NotRequired;
-    return false;
-  }
-
-  if (flattenning_state == ClientFlattenningState::ClientRefreshRequested) {
-    flattenning_state_ = ClientFlattenningState::Flattened;
-    return true;
-  }
-
-  vsync_flattening_en_ = true;
-  vsync_worker_->VSyncControl(true);
-  flattenning_state_ = ClientFlattenningState::VsyncCountdownMax;
-  return false;
-}
-
-void HwcDisplay::ProcessFlatenningVsyncInternal() {
-  if (flattenning_state_ > ClientFlattenningState::ClientRefreshRequested &&
-      --flattenning_state_ == ClientFlattenningState::ClientRefreshRequested &&
-      hwc2_->refresh_callback_.first != nullptr &&
-      hwc2_->refresh_callback_.second != nullptr) {
-    hwc2_->refresh_callback_.first(hwc2_->refresh_callback_.second, handle_);
-    vsync_flattening_en_ = false;
-  }
 }
 
 }  // namespace android

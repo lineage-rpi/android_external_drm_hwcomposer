@@ -11,9 +11,11 @@ inc_include = [include_directories('.')]
 
 src_common = files(
     'compositor/DrmKmsPlan.cpp',
+    'compositor/FlatteningController.cpp',
     'backend/BackendManager.cpp',
     'backend/Backend.cpp',
     'backend/BackendClient.cpp',
+    'utils/fd.cpp',
 )
 
 deps = [

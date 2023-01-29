@@ -23,6 +23,7 @@
 #include <sstream>
 
 #include "HwcDisplayConfigs.h"
+#include "compositor/FlatteningController.h"
 #include "compositor/LayerData.h"
 #include "drm/DrmAtomicStateManager.h"
 #include "drm/ResourceManager.h"
@@ -159,17 +160,11 @@ class HwcDisplay {
     return *pipeline_;
   }
 
-  android_color_transform_t &color_transform_hint() {
-    return color_transform_hint_;
-  }
+  bool CtmByGpu();
 
   Stats &total_stats() {
     return total_stats_;
   }
-
-  /* returns true if composition should be sent to client */
-  bool ProcessClientFlatteningState(bool skip);
-  void ProcessFlatenningVsyncInternal();
 
   /* Headless mode required to keep SurfaceFlinger alive when all display are
    * disconnected, Without headless mode Android will continuously crash.
@@ -183,24 +178,16 @@ class HwcDisplay {
 
   void Deinit();
 
+  auto GetFlatCon() {
+    return flatcon_;
+  }
+
  private:
-  enum ClientFlattenningState : int32_t {
-    Disabled = -3,
-    NotRequired = -2,
-    Flattened = -1,
-    ClientRefreshRequested = 0,
-    VsyncCountdownMax = 60, /* 1 sec @ 60FPS */
-  };
-
-  std::atomic_int flattenning_state_{ClientFlattenningState::NotRequired};
-
-  constexpr static size_t MATRIX_SIZE = 16;
-
   HwcDisplayConfigs configs_;
 
   DrmHwcTwo *const hwc2_;
 
-  UniqueFd present_fence_;
+  SharedFd present_fence_;
 
   std::optional<DrmMode> staged_mode_;
   int64_t staged_mode_change_time_{};
@@ -209,10 +196,10 @@ class HwcDisplay {
   DrmDisplayPipeline *pipeline_{};
 
   std::unique_ptr<Backend> backend_;
+  std::shared_ptr<FlatteningController> flatcon_;
 
   std::shared_ptr<VSyncWorker> vsync_worker_;
   bool vsync_event_en_{};
-  bool vsync_flattening_en_{};
   bool vsync_tracking_en_{};
   int64_t last_vsync_ts_{};
 
@@ -224,8 +211,10 @@ class HwcDisplay {
   std::map<hwc2_layer_t, HwcLayer> layers_;
   HwcLayer client_layer_;
   int32_t color_mode_{};
-  std::array<float, MATRIX_SIZE> color_transform_matrix_{};
-  android_color_transform_t color_transform_hint_;
+  static constexpr int kCtmRows = 3;
+  static constexpr int kCtmCols = 3;
+  std::shared_ptr<drm_color_ctm> color_matrix_;
+  android_color_transform_t color_transform_hint_{};
 
   std::shared_ptr<DrmKmsPlan> current_plan_;
 
@@ -233,6 +222,8 @@ class HwcDisplay {
   Stats total_stats_;
   Stats prev_stats_;
   std::string DumpDelta(HwcDisplay::Stats delta);
+
+  void SetColorMarixToIdentity();
 
   HWC2::Error Init();
 
