@@ -59,6 +59,7 @@ filegroup {
         "bufferinfo/BufferInfoMapperMetadata.cpp",
 
         "compositor/DrmKmsPlan.cpp",
+        "compositor/FlatteningController.cpp",
 
         "drm/DrmAtomicStateManager.cpp",
         "drm/DrmConnector.cpp",
@@ -83,6 +84,8 @@ filegroup {
         "hwc2_device/HwcDisplayConfigs.cpp",
         "hwc2_device/HwcLayer.cpp",
         "hwc2_device/hwc2_device.cpp",
+
+        "utils/fd.cpp",
     ],
 }
 

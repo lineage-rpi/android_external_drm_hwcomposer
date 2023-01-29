@@ -35,7 +35,7 @@ static int GetCrtcProperty(const DrmDevice &dev, const DrmCrtc &crtc,
 
 auto DrmCrtc::CreateInstance(DrmDevice &dev, uint32_t crtc_id, uint32_t index)
     -> std::unique_ptr<DrmCrtc> {
-  auto crtc = MakeDrmModeCrtcUnique(dev.GetFd(), crtc_id);
+  auto crtc = MakeDrmModeCrtcUnique(*dev.GetFd(), crtc_id);
   if (!crtc) {
     ALOGE("Failed to get CRTC %d", crtc_id);
     return {};
@@ -59,6 +59,11 @@ auto DrmCrtc::CreateInstance(DrmDevice &dev, uint32_t crtc_id, uint32_t index)
   if (ret != 0) {
     ALOGE("Failed to get OUT_FENCE_PTR property");
     return {};
+  }
+
+  ret = GetCrtcProperty(dev, *c, "CTM", &c->ctm_property_);
+  if (ret != 0) {
+    ALOGV("Missing optional CTM property");
   }
 
   return c;
