@@ -84,14 +84,7 @@ std::tuple<int, size_t> Backend::GetClientLayers(
 bool Backend::IsClientLayer(HwcDisplay *display, HwcLayer *layer) {
   return !HardwareSupportsLayerType(layer->GetSfType()) ||
          !layer->IsLayerUsableAsDevice() ||
-#if PLATFORM_SDK_VERSION < 33
-         /* For some reason Android 13 will always request color transform.
-          * Since drm_hwc has no support for hardware color transform, all layers
-          * will be composed by GPU. As a workaround ignoring color transform to enable GPU
-          * offload until we find better solution.
-          */
          display->color_transform_hint() != HAL_COLOR_TRANSFORM_IDENTITY ||
-#endif
          (layer->GetLayerData().pi.RequireScalingOrPhasing() &&
           display->GetHwc2()->GetResMan().ForcedScalingWithGpu());
 }
