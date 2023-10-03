@@ -19,18 +19,25 @@
 #include "HwcDisplayConfigs.h"
 
 #include <cmath>
+#include <cstring>
 
 #include "drm/DrmConnector.h"
 #include "utils/log.h"
 
 #include <cutils/properties.h>
 
+constexpr uint32_t kHeadlessModeDisplayVRefresh = 60;
+constexpr uint32_t kSyncLen = 10;
+constexpr uint32_t kBackPorch = 10;
+constexpr uint32_t kFrontPorch = 10;
+constexpr uint32_t kHzInKHz = 1000;
+
 namespace android {
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 uint32_t HwcDisplayConfigs::last_config_id = 1;
 
-void HwcDisplayConfigs::FillHeadless() {
+void HwcDisplayConfigs::GenFakeMode(uint16_t width, uint16_t height) {
   char value[PROPERTY_VALUE_MAX];
   uint32_t xres = 0, yres = 0;
   if (property_get("debug.drm.mode.force", value, NULL)) {
@@ -44,7 +51,6 @@ void HwcDisplayConfigs::FillHeadless() {
   const uint16_t kHeadlessModeDisplayHeightMm = yres ? yres : 900;
   const uint16_t kHeadlessModeDisplayWidthPx = xres ? xres : 1920;
   const uint16_t kHeadlessModeDisplayHeightPx = yres ? yres : 1080;
-  const uint16_t kHeadlessModeDisplayVRefresh = 60;
   ALOGI("set mode %dx%d@%dHz for HEADLESS-MODE", kHeadlessModeDisplayWidthPx,
         kHeadlessModeDisplayHeightPx, kHeadlessModeDisplayVRefresh);
 
@@ -53,11 +59,37 @@ void HwcDisplayConfigs::FillHeadless() {
   last_config_id++;
   preferred_config_id = active_config_id = last_config_id;
   auto headless_drm_mode_info = (drmModeModeInfo){
-      .hdisplay = kHeadlessModeDisplayWidthPx,
-      .vdisplay = kHeadlessModeDisplayHeightPx,
+      .hdisplay = width,
+      .vdisplay = height,
       .vrefresh = kHeadlessModeDisplayVRefresh,
-      .name = "HEADLESS-MODE",
+      .name = "VIRTUAL-MODE",
   };
+
+  if (width == 0 || height == 0) {
+    strcpy(headless_drm_mode_info.name, "HEADLESS-MODE");
+    headless_drm_mode_info.hdisplay = kHeadlessModeDisplayWidthPx;
+    headless_drm_mode_info.vdisplay = kHeadlessModeDisplayHeightPx;
+  }
+
+  /* We need a valid mode to pass the kernel validation */
+
+  headless_drm_mode_info.hsync_start = headless_drm_mode_info.hdisplay +
+                                       kFrontPorch;
+  headless_drm_mode_info.hsync_end = headless_drm_mode_info.hsync_start +
+                                     kSyncLen;
+  headless_drm_mode_info.htotal = headless_drm_mode_info.hsync_end + kBackPorch;
+
+  headless_drm_mode_info.vsync_start = headless_drm_mode_info.vdisplay +
+                                       kFrontPorch;
+  headless_drm_mode_info.vsync_end = headless_drm_mode_info.vsync_start +
+                                     kSyncLen;
+  headless_drm_mode_info.vtotal = headless_drm_mode_info.vsync_end + kBackPorch;
+
+  headless_drm_mode_info.clock = (headless_drm_mode_info.htotal *
+                                  headless_drm_mode_info.vtotal *
+                                  headless_drm_mode_info.vrefresh) /
+                                 kHzInKHz;
+
   hwc_configs[active_config_id] = (HwcDisplayConfig){
       .id = active_config_id,
       .group_id = 1,
@@ -71,8 +103,9 @@ void HwcDisplayConfigs::FillHeadless() {
 // NOLINTNEXTLINE (readability-function-cognitive-complexity): Fixme
 HWC2::Error HwcDisplayConfigs::Update(DrmConnector &connector) {
   /* In case UpdateModes will fail we will still have one mode for headless
-   * mode*/
-  FillHeadless();
+   * mode
+   */
+  GenFakeMode(0, 0);
   /* Read real configs */
   auto ret = connector.UpdateModes();
   if (ret != 0) {

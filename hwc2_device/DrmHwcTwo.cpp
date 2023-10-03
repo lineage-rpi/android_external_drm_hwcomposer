@@ -35,13 +35,13 @@ void DrmHwcTwo::FinalizeDisplayBinding() {
     displays_[kPrimaryDisplay] = std::make_unique<
         HwcDisplay>(kPrimaryDisplay, HWC2::DisplayType::Physical, this);
     /* Initializes null-display */
-    displays_[kPrimaryDisplay]->SetPipeline(nullptr);
+    displays_[kPrimaryDisplay]->SetPipeline({});
   }
 
   if (displays_[kPrimaryDisplay]->IsInHeadlessMode() &&
       !display_handles_.empty()) {
     /* Reattach first secondary display to take place of the primary */
-    auto *pipe = display_handles_.begin()->first;
+    auto pipe = display_handles_.begin()->first;
     ALOGI("Primary display was disconnected, reattaching '%s' as new primary",
           pipe->connector->Get()->GetName().c_str());
     UnbindDisplay(pipe);
@@ -66,10 +66,10 @@ void DrmHwcTwo::FinalizeDisplayBinding() {
   }
 }
 
-bool DrmHwcTwo::BindDisplay(DrmDisplayPipeline *pipeline) {
+bool DrmHwcTwo::BindDisplay(std::shared_ptr<DrmDisplayPipeline> pipeline) {
   if (display_handles_.count(pipeline) != 0) {
     ALOGE("%s, pipeline is already used by another display, FIXME!!!: %p",
-          __func__, pipeline);
+          __func__, pipeline.get());
     return false;
   }
 
@@ -96,9 +96,9 @@ bool DrmHwcTwo::BindDisplay(DrmDisplayPipeline *pipeline) {
   return true;
 }
 
-bool DrmHwcTwo::UnbindDisplay(DrmDisplayPipeline *pipeline) {
+bool DrmHwcTwo::UnbindDisplay(std::shared_ptr<DrmDisplayPipeline> pipeline) {
   if (display_handles_.count(pipeline) == 0) {
-    ALOGE("%s, can't find the display, pipeline: %p", __func__, pipeline);
+    ALOGE("%s, can't find the display, pipeline: %p", __func__, pipeline.get());
     return false;
   }
   auto handle = display_handles_[pipeline];
@@ -112,7 +112,7 @@ bool DrmHwcTwo::UnbindDisplay(DrmDisplayPipeline *pipeline) {
     ALOGE("%s, can't find the display, handle: %" PRIu64, __func__, handle);
     return false;
   }
-  displays_[handle]->SetPipeline(nullptr);
+  displays_[handle]->SetPipeline({});
 
   /* We must defer display disposal and removal, since it may still have pending
    * HWC_API calls scheduled and waiting until ueventlistener thread releases
@@ -124,17 +124,47 @@ bool DrmHwcTwo::UnbindDisplay(DrmDisplayPipeline *pipeline) {
   return true;
 }
 
-HWC2::Error DrmHwcTwo::CreateVirtualDisplay(uint32_t /*width*/,
-                                            uint32_t /*height*/,
-                                            int32_t * /*format*/,
-                                            hwc2_display_t * /*display*/) {
-  // TODO(nobody): Implement virtual display
-  return HWC2::Error::Unsupported;
+HWC2::Error DrmHwcTwo::CreateVirtualDisplay(
+    uint32_t width, uint32_t height,
+    int32_t *format,  // NOLINT(readability-non-const-parameter)
+    hwc2_display_t *display) {
+  ALOGI("Creating virtual display %dx%d format %d", width, height, *format);
+
+  auto virtual_pipeline = resource_manager_.GetVirtualDisplayPipeline();
+  if (!virtual_pipeline)
+    return HWC2::Error::Unsupported;
+
+  *display = ++last_display_handle_;
+  auto disp = std::make_unique<HwcDisplay>(*display, HWC2::DisplayType::Virtual,
+                                           this);
+
+  disp->SetVirtualDisplayResolution(width, height);
+  disp->SetPipeline(virtual_pipeline);
+  displays_[*display] = std::move(disp);
+  return HWC2::Error::None;
 }
 
-HWC2::Error DrmHwcTwo::DestroyVirtualDisplay(hwc2_display_t /*display*/) {
-  // TODO(nobody): Implement virtual display
-  return HWC2::Error::Unsupported;
+HWC2::Error DrmHwcTwo::DestroyVirtualDisplay(hwc2_display_t display) {
+  ALOGI("Destroying virtual display %" PRIu64, display);
+
+  if (displays_.count(display) == 0) {
+    ALOGE("Trying to destroy non-existent display %" PRIu64, display);
+    return HWC2::Error::BadDisplay;
+  }
+
+  displays_[display]->SetPipeline({});
+
+  /* Wait 0.2s before removing the displays to flush pending HWC2 transactions
+   */
+  auto &mutex = GetResMan().GetMainLock();
+  mutex.unlock();
+  const int kTimeForSFToDisposeDisplayUs = 200000;
+  usleep(kTimeForSFToDisposeDisplayUs);
+  mutex.lock();
+
+  displays_.erase(display);
+
+  return HWC2::Error::None;
 }
 
 void DrmHwcTwo::Dump(uint32_t *outSize, char *outBuffer) {
@@ -156,8 +186,11 @@ void DrmHwcTwo::Dump(uint32_t *outSize, char *outBuffer) {
 }
 
 uint32_t DrmHwcTwo::GetMaxVirtualDisplayCount() {
-  // TODO(nobody): Implement virtual display
-  return 0;
+  auto writeback_count = resource_manager_.GetWritebackConnectorsCount();
+  writeback_count = std::min(writeback_count, 1U);
+  /* Currently, only 1 virtual display is supported. Other cases need testing */
+  ALOGI("Max virtual display count: %d", writeback_count);
+  return writeback_count;
 }
 
 HWC2::Error DrmHwcTwo::RegisterCallback(int32_t descriptor,
